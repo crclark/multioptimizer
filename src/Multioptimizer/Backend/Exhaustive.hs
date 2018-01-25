@@ -5,7 +5,7 @@ module Multioptimizer.Backend.Exhaustive (
  where
 
 import Multioptimizer.Internal
-import Multioptimizer.Util.Pareto (emptyFrontier, insert, getFrontier)
+import Multioptimizer.Util.Pareto (emptyFrontier, insert, getFrontier, shrinkToSize)
 import Control.Monad.Operational (ProgramViewT(Return,(:>>=)), view)
 import Control.Monad.Trans (lift)
 import Data.List (maximumBy)
@@ -13,7 +13,7 @@ import Data.Ord (comparing)
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 import GHC.Exts(IsList(..))
-import ListT (ListT,fromFoldable, fold)
+import ListT (ListT, fromFoldable, fold)
 
 search :: Monad m => Opt a
                   -- ^ Generator.
@@ -23,15 +23,17 @@ search :: Monad m => Opt a
                   -> (a -> m (U.Vector Double))
                   -- ^ Evaluation function. Must always return vectors of the
                   -- same length for valid results!
-                  -> Word
-                  -- ^ Number of objectives in vector returned by evaluation fn.
                   -> m (V.Vector (a, U.Vector Double))
                   -- ^ Vector of Pareto front of items, with their
                   -- evaluations.
-search a m f n = do
-  let acc front item = return (insert item front)
-  front <- fold acc (emptyFrontier m n) (enumerateAll a f)
+search a maxSize f = do
+  front <- fold insertOne emptyFrontier (enumerateAll a f)
   return (getFrontier front)
+  where insertOne front item =
+         let front' = insert item front
+             in if V.length (getFrontier front') > (fromIntegral maxSize)
+                  then return (shrinkToSize maxSize front')
+                  else return front'
 
 -- | Enumerate all possibilities, paired with their objectives.
 enumerateAll :: Monad m =>

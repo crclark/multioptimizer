@@ -23,22 +23,21 @@ dominates x y =
 data Frontier a = Frontier
   { frontier :: !(V.Vector (a, U.Vector Double))
     -- ^ objects stored with their objective vectors
-  , maxItems :: !Word
-    -- ^ max items to keep in frontier before shrinking it
-  , numObjs :: !Word
-    -- ^ Number of objectives in each objective vector
   }
+
+instance Semigroup (Frontier a) where
+  (<>) x y = V.foldr' insert x (frontier y)
+
+instance Monoid (Frontier a) where
+  mempty = emptyFrontier
+  mappend = (<>)
 
 -- Retrieves the non-dominated items currently in the Frontier.
 getFrontier :: Frontier a -> V.Vector (a, U.Vector Double)
-getFrontier = frontier . shrinkToSize
+getFrontier = frontier
 
-emptyFrontier :: Word
-                 -- ^ Maximum number of non-dominated solutions to maintain.
-                 -> Word
-                 -- ^ Number of objectives returned by objective function.
-                 -> Frontier a
-emptyFrontier maxItems numObjs = Frontier V.empty maxItems numObjs
+emptyFrontier :: Frontier a
+emptyFrontier = Frontier V.empty
 
 -- | Inserts an item into the Paerto Frontier. Returns a tuple of the new
 -- Frontier and True if the inserted item was non-dominated (kept) or False if
@@ -48,10 +47,7 @@ insertQuery :: (a, U.Vector Double) -> Frontier a -> (Frontier a, Bool)
 insertQuery x f@Frontier{..} =
   case nonDominated of
     Nothing -> (f, False) -- new item was dominated by something already in frontier
-    Just xs -> let newFrontier = V.fromList xs
-                   in if V.length newFrontier > 2*(fromIntegral maxItems)
-                         then (shrinkToSize f{frontier = newFrontier}, True)
-                         else (f{frontier = newFrontier}, True)
+    Just xs -> (Frontier (V.fromList xs), True)
     where nonDominated = foldr go (Just [x]) (V.toList frontier)
           go _ Nothing = Nothing
           go y l@(Just ys) | dominates (snd y) (snd x) = Nothing
@@ -96,10 +92,14 @@ crowdingDists Frontier{..} =
                                       else let rN = (sorted V.! (i+1)) U.! m
                                                lN = (sorted V.! (i-1)) U.! m
                                                in (rN - lN)/denom)
+         numObjs = case frontier V.!? 0 of
+                    Nothing -> 0
+                    Just (_,v) -> U.length v
 
--- | Shrinks frontier to its maximum size, preferring the least-crowded members.
-shrinkToSize :: Frontier a -> Frontier a
-shrinkToSize f@Frontier{..} =
+-- | Shrinks frontier to the specified size, preferring the least-crowded
+-- members.
+shrinkToSize :: Word -> Frontier a -> Frontier a
+shrinkToSize maxItems f@Frontier{..} =
   let sortedByCrowding = V.modify (Merge.sortBy (comparing $ negate . snd))
                          (V.zip frontier (crowdingDists f))
       in f{frontier = V.take (fromIntegral maxItems)

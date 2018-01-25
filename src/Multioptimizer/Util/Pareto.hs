@@ -4,7 +4,8 @@ module Multioptimizer.Util.Pareto (
   emptyFrontier,
   getFrontier,
   insert,
-  insertQuery
+  insertQuery,
+  shrinkToSize
 ) where
 
 import Multioptimizer.Util.Pareto.Internal

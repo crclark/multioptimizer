@@ -27,7 +27,7 @@ units = testGroup "Pareto internals unit tests"
                   ]
 
 standardEmpty :: Frontier ()
-standardEmpty = emptyFrontier 5 2
+standardEmpty = emptyFrontier
 
 obj :: U.Vector Double -> ((), U.Vector Double)
 obj = ((),)
@@ -80,7 +80,7 @@ shrinkToSizeUnit = testCase "Shrinking limits size" $ do
                                        , [1.9, 1.1]
                                        , [1.8, 1.2]
                                        , [1.7, 1.3]]
-  length (getFrontier f) @?= 5
+  length (getFrontier (shrinkToSize 5 f)) @?= 5
 
 shrinkRemovesCrowded :: TestTree
 shrinkRemovesCrowded = testCase "Shrinking removes most crowded items" $ do
@@ -93,7 +93,7 @@ shrinkRemovesCrowded = testCase "Shrinking removes most crowded items" $ do
                                        , [1.89, 1.11]
                                        , [1.8, 1.2]
                                        , [1.7, 1.3]]
-  let front = toList $ getFrontier f
+  let front = toList $ getFrontier $ shrinkToSize 5 f
   -- one of the two crowded items has been removed
   (elem (obj [1.89, 1.11]) front && elem (obj [1.9, 1.1]) front) @?= False
 
