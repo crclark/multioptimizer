@@ -1,4 +1,5 @@
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE TupleSections #-}
 
 module Multioptimizer.Util.Pareto.Internal where
 
@@ -14,6 +15,47 @@ dominates :: U.Vector Double -> U.Vector Double -> Bool
 dominates x y =
   U.any id (U.zipWith (>) x y) && U.all id (U.zipWith (>=) x y)
 
+-- TODO: https://pdfs.semanticscholar.org/dd8c/adc4bc4caba8a1053991b453829e43e7506a.pdf
+-- and http://www.wfg.csse.uwa.edu.au/publications/WFG2012a.pdf
+-- | Computes the hypervolume of a set of vectors. The vectors must be mutually
+-- non-dominated.
+-- Uses the WFG algorithm from While and Bradstreet, A Fast Way of Calculating
+-- Exact Hypervolumes, IEEE Transactions on Evolutionary Computation, 2012.
+-- The hypervolume needs to also be passed a reference point which provides the
+-- "corner" defining the lowest extent of the hypervolume. This should be the
+-- minimum of each of the objectives in question. If comparing the hypervolume
+-- of two fronts, the refpoint would need to be the minimum across both fronts.
+-- TODO: if this isn't fast enough, I believe we can make this incremental by
+-- by building a DAG out of which points were used to compute the exclusive
+-- hypervolumes of other points. Then when we add a point, we need only add the
+-- exclusive hypervolume of the new point, and when we delete a point, we only
+-- need to recompute the contribution of the points that depended on it for
+-- their last exclusive hypervolume contribution.
+hypervolume :: U.Vector Double -> V.Vector (U.Vector Double) -> Double
+hypervolume refpoint = wfg refpoint
+
+wfg :: U.Vector Double -> V.Vector (U.Vector Double) -> Double
+wfg refpoint xs = V.sum $ V.imap (exclhv xs refpoint) xs
+
+exclhv :: V.Vector (U.Vector Double)
+          -> U.Vector Double
+          -> Int
+          -> U.Vector Double
+          -> Double
+exclhv xs refpoint k v =
+  (inclhv refpoint v) - wfg refpoint (nonDominated (limitSet xs k))
+
+nonDominated :: V.Vector (U.Vector Double) -> V.Vector (U.Vector Double)
+nonDominated = V.map snd . getFrontier . V.foldr (insert . ((),)) mempty
+
+inclhv :: U.Vector Double -> U.Vector Double -> Double
+inclhv refpoint v = U.product (U.zipWith (-) v refpoint)
+
+limitSet :: V.Vector (U.Vector Double) -> Int -> V.Vector (U.Vector Double)
+limitSet xs k = V.map (worse (xs V.! k)) rest
+  where rest = V.drop (k+1) xs
+        worse = U.zipWith min
+
 -- | Maintains a set of mutually non-dominated items of a
 -- configurable size. Attempts to keep a wide frontier, where items are not
 -- crowded near each other in objective space.
@@ -24,6 +66,7 @@ data Frontier a = Frontier
   { frontier :: !(V.Vector (a, U.Vector Double))
     -- ^ objects stored with their objective vectors
   }
+  deriving Show
 
 instance Semigroup (Frontier a) where
   (<>) x y = V.foldr' insert x (frontier y)

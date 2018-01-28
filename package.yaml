@@ -26,6 +26,7 @@ dependencies:
 - operational
 - list-t
 - mtl
+- containers
 
 library:
   source-dirs: src

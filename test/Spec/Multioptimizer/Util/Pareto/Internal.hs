@@ -24,6 +24,8 @@ units = testGroup "Pareto internals unit tests"
                   , shrinkRemovesCrowded
                   , bigDoubleIsLarge
                   , insertionOrder
+                  , hypervolume2d
+                  , hypervolume3d
                   ]
 
 standardEmpty :: Frontier ()
@@ -121,3 +123,16 @@ insertionOrder = testCase "insertion order doesn't affect Frontier output" $ do
   let fOut = sort $ map (toList . snd) $ toList $ frontier f
   let f'Out = sort $ map (toList . snd) $ toList $ frontier f'
   fOut @?= f'Out
+
+hypervolume2d :: TestTree
+hypervolume2d = testCase "some hypervolume test cases" $ do
+  let vecs = [[1,2],[2,1]]
+  hypervolume [0,0] vecs @?= 3
+  hypervolume [2,2] vecs @?= -1
+  hypervolume [-1,-1] vecs @?= 8
+
+hypervolume3d :: TestTree
+hypervolume3d = testCase "3d hypervolume test cases" $ do
+  hypervolume [0,0,0] [[1,2,3]] @?= 6
+  hypervolume [0,0,1] [[1,2,3]] @?= 4
+  hypervolume [0,0,0] [[1,1,2], [2,1,1]] @?= 3
