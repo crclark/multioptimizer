@@ -27,6 +27,8 @@ dependencies:
 - list-t
 - mtl
 - containers
+- random-source
+- random-fu
 
 library:
   source-dirs: src
