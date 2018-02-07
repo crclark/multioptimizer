@@ -28,7 +28,9 @@ dependencies:
 - mtl
 - containers
 - random-source
-- random-fu
+- random-fu # many deps for this one
+- clock
+- safe
 
 library:
   source-dirs: src

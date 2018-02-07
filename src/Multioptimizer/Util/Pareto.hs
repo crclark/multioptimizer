@@ -1,5 +1,6 @@
 module Multioptimizer.Util.Pareto (
   dominates,
+  domOrdering,
   Frontier,
   emptyFrontier,
   getFrontier,

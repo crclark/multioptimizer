@@ -3,7 +3,7 @@
 
 module Multioptimizer.Util.Pareto.Internal where
 
-import Data.Ord (comparing)
+import Data.Ord (comparing, Ordering(..))
 import Data.Semigroup
 import qualified Data.Vector as V
 import Data.Vector.Algorithms.Merge as Merge
@@ -14,6 +14,14 @@ import GHC.Float (floatRange)
 dominates :: U.Vector Double -> U.Vector Double -> Bool
 dominates x y =
   U.any id (U.zipWith (>) x y) && U.all id (U.zipWith (>=) x y)
+
+domOrdering :: U.Vector Double -> U.Vector Double -> Ordering
+domOrdering x y =
+  case (dominates x y, dominates y x) of
+    (True, True) -> error "impossible case"
+    (True, False) -> GT
+    (False, True) -> LT
+    (False, False) -> EQ
 
 -- TODO: https://pdfs.semanticscholar.org/dd8c/adc4bc4caba8a1053991b453829e43e7506a.pdf
 -- and http://www.wfg.csse.uwa.edu.au/publications/WFG2012a.pdf
