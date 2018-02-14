@@ -23,8 +23,6 @@ domOrdering x y =
     (False, True) -> LT
     (False, False) -> EQ
 
--- TODO: https://pdfs.semanticscholar.org/dd8c/adc4bc4caba8a1053991b453829e43e7506a.pdf
--- and http://www.wfg.csse.uwa.edu.au/publications/WFG2012a.pdf
 -- | Computes the hypervolume of a set of vectors. The vectors must be mutually
 -- non-dominated.
 -- Uses the WFG algorithm from While and Bradstreet, A Fast Way of Calculating
