@@ -1,12 +1,14 @@
 module Multioptimizer.Util.Pareto (
   dominates,
   domOrdering,
-  Frontier,
+  Frontier(..),
   emptyFrontier,
   getFrontier,
   insert,
   insertQuery,
-  shrinkToSize
+  shrinkToSize,
+  hypervolume,
+  minObjValues
 ) where
 
 import Multioptimizer.Util.Pareto.Internal

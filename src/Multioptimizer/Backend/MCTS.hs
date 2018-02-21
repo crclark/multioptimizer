@@ -4,6 +4,7 @@ module Multioptimizer.Backend.MCTS where
 
 import Control.Monad.Operational (ProgramViewT(Return,(:>>=)), view)
 import Data.Word
+import Data.Foldable (maximumBy)
 import Data.Function (on)
 import Data.Ord (comparing)
 import qualified Data.Vector as V
@@ -16,6 +17,7 @@ import Safe.Foldable (maximumByMay)
 import Multioptimizer.Backend.Random (toRVarT)
 import Multioptimizer.Util.Pareto
 import Multioptimizer.Internal
+import GHC.Exts(IsList(..))
 
 data ChoiceInfo a = DiscreteChoice {
   discreteChoiceMax :: Word,
@@ -24,9 +26,9 @@ data ChoiceInfo a = DiscreteChoice {
   -- ^ branches to choices that have already been expanded
   } deriving Show
 
-data Chosen a = DiscreteChosen {
+data Chosen intermed = DiscreteChosen {
   discreteChosenIndex :: Int,
-  chosenChoice :: a,
+  chosenChoice :: intermed,
   isChosenNew :: Bool
   -- ^ True iff we have chosen to expand a branch we haven't explored before
 } deriving Show
@@ -46,11 +48,50 @@ data Tree a = Branch {
 mcts :: Opt a -> Tree a -> RVarT IO (Tree a)
 mcts (Opt o) t = undefined
 
+uct :: Word
+    -- ^ treeNumVisits of parent node
+    -> Double
+    -- ^ exploration factor C_p > 0
+    -> (Word -> Double)
+    -- ^ Function assigning each child index to the number of times it has
+    -- been visited.
+    -> V.Vector Double
+    -- ^ Scaled hypervolume scores
+    -> Word
+    -- ^ index of best child
+uct n c_p numVisits scores =
+  -- TODO: not total!
+  fst $ maximumBy (comparing f) (zip [0..] (toList scores))
+  where f (ix,score) = let denom = numVisits ix
+                           numer :: Double
+                           numer = 2.0 * log (fromIntegral n)
+                           in score + 2.0 * sqrt (numer/denom)
+
+-- TODO: this is ignoring the possibility that xs is empty!
 choose :: ChoiceInfo a -> OptInstr intermed -> RVarT IO (Chosen intermed)
-choose DiscreteChoice{..} (UniformChoice xs) = undefined
+choose DiscreteChoice{..} (UniformChoice xs) =
+  case IM.size expandedChoices of
+    0 -> do
+      discreteChosenIndex <- fromIntegral <$> uniformT 0 discreteChoiceMax
+      let chosenChoice = (xs V.! discreteChosenIndex)
+      let isChosenNew = True
+      return DiscreteChosen{..}
+    _ -> do
+      let refpoint = foldr1 (U.zipWith min) $
+                     map snd $
+                     concatMap toList $
+                     map (treeFrontier . snd) $ toList expandedChoices
+      let hyperVols = IM.map (hypervolume refpoint . treeFrontier)
+                             expandedChoices
+      let maxHyperVol = maximum (map snd (toList hyperVols))
+      let scaledHyperVols = IM.map (/maxHyperVol) hyperVols
+      let numChildVisits ix = case IM.lookup ix expandedChoices of
+                               Nothing -> 0.0
+                               Just t -> fromIntegral $ treeNumVisits t
+      return undefined
 
 defaultStrategy :: Opt a -> RVarT IO a
-defaultStrategy = undefined
+defaultStrategy = toRVarT
 
 -- | one iteration of MCTS for a given tree. Adds one sample.
 -- Returns the updated tree along with the sample that was added to the tree
@@ -61,8 +102,8 @@ mctsAddSample :: Opt a
                  -> RVarT IO (Tree a, a, U.Vector Double)
 mctsAddSample (Opt o) eval t = case (view o, t) of
   (Return x, Leaf) -> return (Leaf, x, eval x)
-  (Return x, _) -> error "impossible case 1 in mctsAddSample"
-  (choice :>>= m, Leaf) -> error "impossible case 2 in mctsAddSample"
+  (Return _, _) -> error "impossible case 1 in mctsAddSample"
+  (_ :>>= _, Leaf) -> error "impossible case 2 in mctsAddSample"
   (choice :>>= m, b@Branch{..}) -> do
     chosen <- choose treeChoiceInfo choice
     case isChosenNew chosen of
@@ -74,7 +115,17 @@ mctsAddSample (Opt o) eval t = case (view o, t) of
                      treeChoiceInfo = updateChoiceInfo chosen treeChoiceInfo}
         return (b', sampled, objs)
       False -> do
-        undefined
+        let nextStep = Opt (m (chosenChoice chosen))
+        let ix = discreteChosenIndex chosen
+        let oldSubtree = expandedChoices treeChoiceInfo IM.! ix
+        (newSubtree, sampled, objs) <- mctsAddSample nextStep eval oldSubtree
+        let newExpandedChoices = IM.insert ix newSubtree (expandedChoices treeChoiceInfo)
+        let b' = b { treeFrontier = insert (sampled, objs) treeFrontier,
+                     treeNumVisits = treeNumVisits + 1,
+                     treeChoiceInfo = treeChoiceInfo {expandedChoices = newExpandedChoices}}
+        return (b', sampled, objs)
+
+
 
 -- TODO: this isn't quite right. Nested MCTS records the globally best sequence
 -- and always plays the move from that sequence, even if it wasn't found in the

@@ -1,5 +1,6 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE TypeFamilies #-}
 
 module Multioptimizer.Util.Pareto.Internal where
 
@@ -9,6 +10,7 @@ import qualified Data.Vector as V
 import Data.Vector.Algorithms.Merge as Merge
 import qualified Data.Vector.Unboxed as U
 import GHC.Float (floatRange)
+import GHC.Exts(IsList(..))
 
 -- @dominates x y@ is True iff x Pareto dominates y.
 dominates :: U.Vector Double -> U.Vector Double -> Bool
@@ -22,23 +24,6 @@ domOrdering x y =
     (True, False) -> GT
     (False, True) -> LT
     (False, False) -> EQ
-
--- | Computes the hypervolume of a set of vectors. The vectors must be mutually
--- non-dominated.
--- Uses the WFG algorithm from While and Bradstreet, A Fast Way of Calculating
--- Exact Hypervolumes, IEEE Transactions on Evolutionary Computation, 2012.
--- The hypervolume needs to also be passed a reference point which provides the
--- "corner" defining the lowest extent of the hypervolume. This should be the
--- minimum of each of the objectives in question. If comparing the hypervolume
--- of two fronts, the refpoint would need to be the minimum across both fronts.
--- TODO: if this isn't fast enough, I believe we can make this incremental by
--- by building a DAG out of which points were used to compute the exclusive
--- hypervolumes of other points. Then when we add a point, we need only add the
--- exclusive hypervolume of the new point, and when we delete a point, we only
--- need to recompute the contribution of the points that depended on it for
--- their last exclusive hypervolume contribution.
-hypervolume :: U.Vector Double -> V.Vector (U.Vector Double) -> Double
-hypervolume refpoint = wfg refpoint
 
 wfg :: U.Vector Double -> V.Vector (U.Vector Double) -> Double
 wfg refpoint xs = V.sum $ V.imap (exclhv xs refpoint) xs
@@ -74,6 +59,8 @@ data Frontier a = Frontier
   }
   deriving Show
 
+-- TODO: this will explode if the frontiers have different numbers of objs!
+-- use Nats?
 instance Semigroup (Frontier a) where
   (<>) x y = V.foldr' insert x (frontier y)
 
@@ -81,7 +68,41 @@ instance Monoid (Frontier a) where
   mempty = emptyFrontier
   mappend = (<>)
 
--- Retrieves the non-dominated items currently in the Frontier.
+instance IsList (Frontier a) where
+  type Item (Frontier a) = (a, U.Vector Double)
+  toList = toList . frontier
+  fromList = Frontier . fromList
+
+-- | Computes the hypervolume of a set of vectors. The vectors must be mutually
+-- non-dominated.
+-- Uses the WFG algorithm from While and Bradstreet, A Fast Way of Calculating
+-- Exact Hypervolumes, IEEE Transactions on Evolutionary Computation, 2012.
+-- The hypervolume needs to also be passed a reference point which provides the
+-- "corner" defining the lowest extent of the hypervolume. This should be the
+-- minimum of each of the objectives in question. If comparing the hypervolume
+-- of two fronts, the refpoint would need to be the minimum across both fronts.
+-- TODO: if this isn't fast enough, I believe we can make this incremental by
+-- by building a DAG out of which points were used to compute the exclusive
+-- hypervolumes of other points. Then when we add a point, we need only add the
+-- exclusive hypervolume of the new point, and when we delete a point, we only
+-- need to recompute the contribution of the points that depended on it for
+-- their last exclusive hypervolume contribution.
+hypervolume :: U.Vector Double -> Frontier a -> Double
+hypervolume refpoint = wfg refpoint . V.map snd . frontier
+
+-- | Returns the min of each objective that is currently in the frontier.
+-- This can be used to find a reference point for hypervolume calculation.
+-- Returns zeros if the frontier is empty.
+minObjValues :: Word
+             -- ^ Number of objectives in the problem.
+             -> Frontier a
+             -> U.Vector Double
+minObjValues numObjs =
+  V.foldr' (U.zipWith min) (U.replicate (fromIntegral numObjs) 0)
+  . V.map snd
+  . frontier
+
+-- | Retrieves the non-dominated items currently in the Frontier.
 getFrontier :: Frontier a -> V.Vector (a, U.Vector Double)
 getFrontier = frontier
 
@@ -94,10 +115,10 @@ emptyFrontier = Frontier V.empty
 -- discarded).
 insertQuery :: (a, U.Vector Double) -> Frontier a -> (Frontier a, Bool)
 insertQuery x f@Frontier{..} =
-  case nonDominated of
+  case nonDominatedSet of
     Nothing -> (f, False) -- new item was dominated by something already in frontier
     Just xs -> (Frontier (V.fromList xs), True)
-    where nonDominated = foldr go (Just [x]) (V.toList frontier)
+    where nonDominatedSet = foldr go (Just [x]) (V.toList frontier)
           go _ Nothing = Nothing
           go y l@(Just ys) | dominates (snd y) (snd x) = Nothing
                            | dominates (snd x) (snd y) = l
