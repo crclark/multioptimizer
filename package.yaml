@@ -34,6 +34,9 @@ dependencies:
 
 library:
   source-dirs: src
+  ghc-options:
+  - -Wall
+  - -Werror
 
 executables:
   multioptimizer-exe:
@@ -43,6 +46,7 @@ executables:
     - -threaded
     - -rtsopts
     - -with-rtsopts=-N
+    - -Wall
     dependencies:
     - multioptimizer
 
@@ -58,3 +62,4 @@ tests:
     - multioptimizer
     - tasty
     - tasty-hunit
+    - pretty-simple

@@ -8,11 +8,8 @@ import Multioptimizer.Internal
 import Multioptimizer.Util.Pareto (emptyFrontier, insert, getFrontier, shrinkToSize)
 import Control.Monad.Operational (ProgramViewT(Return,(:>>=)), view)
 import Control.Monad.Trans (lift)
-import Data.List (maximumBy)
-import Data.Ord (comparing)
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
-import GHC.Exts(IsList(..))
 import ListT (ListT, fromFoldable, fold)
 
 search :: Monad m => Opt a

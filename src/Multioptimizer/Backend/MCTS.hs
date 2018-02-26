@@ -1,31 +1,65 @@
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE StrictData #-}
+{-# LANGUAGE BangPatterns #-}
 
 module Multioptimizer.Backend.MCTS where
 
+import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Operational (ProgramViewT(Return,(:>>=)), view)
-import Data.Word
-import Data.Foldable (maximumBy)
+import Data.Foldable (minimumBy)
 import Data.Function (on)
+import Data.IORef (newIORef)
 import Data.Ord (comparing)
+import Data.Maybe (isJust)
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 import qualified Data.IntMap.Strict as IM
-import Data.Random (sampleState, RVar, RVarT, uniformT)
+import Data.Random (RVarT, runRVarTWith, uniformT)
+import Data.Random.Source.IO ()
+import Data.Random.Source.PureMT (newPureMT, pureMT)
 import Data.Foldable (asum)
 import Data.Traversable (forM)
+import Data.Word (Word64)
 import Safe.Foldable (maximumByMay)
-import Multioptimizer.Backend.Random (toRVarT)
+import Multioptimizer.Backend.Random (runOpt)
 import Multioptimizer.Util.Pareto
 import Multioptimizer.Internal
 import GHC.Exts(IsList(..))
+import System.Clock (getTime, Clock(Monotonic), toNanoSecs)
 
-data ChoiceInfo a = DiscreteChoice {
-  discreteChoiceMax :: Word,
-  -- ^ choices are in the range 0,discreteChoiceMax, inclusive
-  expandedChoices :: IM.IntMap (Tree a)
-  -- ^ branches to choices that have already been expanded
-  } deriving Show
+-- | Options for one run of Monte Carlo tree search. See 'defaultOpts' for
+-- defaults.
+data MCTSOpts = MCTSOpts {
+  timeLimitMillis :: Word,
+  -- ^ Maximum time to search
+  maxIters :: Maybe Word,
+  -- ^ Maximum number of iterations to run. One iteration corresponds to the
+  -- evaluation of one candidate solution.
+  explorationFactor :: Double,
+  -- ^ weight to give to exploration. Must be greater than zero. @1 / sqrt 2@ is
+  -- a theoretically advisable number that is used in 'defaultOpts'. See A
+  -- Survey of Monte Carlo Tree Search Methods by Browne et al., 2012.
+  maxSolutions :: Word,
+  -- ^ Maximum number of solutions to return. We attempt to return solutions
+  -- which are spread across a wide range of the Pareto front.
+  randomSeed :: Maybe Word64
+  -- ^ Random seed to use for reproducibility.
+  -- If 'Nothing', uses system randomness.
+} deriving (Show, Eq)
 
+-- | A set of reasonable default options.
+defaultOpts :: MCTSOpts
+defaultOpts = MCTSOpts {
+  timeLimitMillis = 1000,
+  maxIters = Nothing,
+  explorationFactor = (1.0 / sqrt 2.0),
+  maxSolutions = 100,
+  randomSeed = Nothing
+}
+
+-- | Represents a chosen branch at a given step of traversing the tree.
+-- Contains the intermediate value chosen, the index of that value in the
+-- vector of choices, and whether we have chosen this branch before.
 data Chosen intermed = DiscreteChosen {
   discreteChosenIndex :: Int,
   chosenChoice :: intermed,
@@ -33,103 +67,205 @@ data Chosen intermed = DiscreteChosen {
   -- ^ True iff we have chosen to expand a branch we haven't explored before
 } deriving Show
 
-updateChoiceInfo :: Chosen intermed -> ChoiceInfo a -> ChoiceInfo a
-updateChoiceInfo = undefined
+insertSubResult :: MCTSOpts
+                -> (Tree a, Chosen intermed, a, U.Vector Double)
+                -- ^ Subtree, chosen branch, subresult, its evaluation
+                -> Tree a
+                -- ^ current tree
+                -> Tree a
+                -- ^ updated tree
+insertSubResult MCTSOpts{..}
+                (subtree, DiscreteChosen{..}, x, objs)
+                DiscreteBranch{..} =
+  DiscreteBranch {
+    _treeFrontier = shrinkToSize maxSolutions $ insert (x, objs) _treeFrontier,
+    numVisits = numVisits + 1,
+    expandedChoices = (IM.insert discreteChosenIndex subtree expandedChoices)}
+insertSubResult _ _ (Leaf _) =
+  error "impossible case in insertSubResult"
 
-data Tree a = Branch {
-  treeFrontier :: Frontier a,
-  treeNumVisits :: Word,
-  treeChoiceInfo :: ChoiceInfo a
+data Tree a = DiscreteBranch {
+  _treeFrontier :: Frontier a,
+  numVisits :: Word,
+  -- ^ Number of times we have passed through this choice. Note this is distinct
+  -- from @size expandedChoices@, because we could take the same choice more
+  -- than once.
+  expandedChoices :: IM.IntMap (Tree a)
+  -- ^ branches to choices that have already been expanded
 }
- | Leaf
+ | Leaf {numVisits :: Word}
   deriving Show
 
--- | Monte Carlo tree search, returning the resulting tree
-mcts :: Opt a -> Tree a -> RVarT IO (Tree a)
-mcts (Opt o) t = undefined
+treeFrontier :: Tree a -> Frontier a
+treeFrontier (Leaf _) = mempty
+treeFrontier t = _treeFrontier t
 
+-- | Monte Carlo tree search, returning the resulting tree
+mcts :: MCTSOpts -> Opt a -> (a -> IO (U.Vector Double)) -> IO (Tree a)
+mcts opts@MCTSOpts{..} o objFunction = do
+  startTime <- liftIO currMillis
+  randSource <- case randomSeed of
+                 Nothing -> do mt <- liftIO newPureMT
+                               liftIO (newIORef mt)
+                 Just s -> liftIO $ newIORef $ pureMT s
+  runRVarTWith liftIO (go (initTree o) startTime 0) randSource
+  where currMillis = (`div` 1000000) <$> toNanoSecs <$> getTime Monotonic
+        go t startTime !iters = do
+          currTime <- liftIO currMillis
+          let outOfTime = currTime - startTime > fromIntegral timeLimitMillis
+          let outOfIters = (== iters) <$> maxIters
+          case (outOfTime, outOfIters) of
+            (True, _) -> return t
+            (_, Just True) -> return t
+            _ -> do res <- mctsAddSample opts o objFunction t
+                    case res of
+                      Nothing -> go t startTime (iters+1)
+                      Just (t', _, _) -> go t' startTime (iters+1)
+
+
+
+-- | Selects the index of the best child node to visit, using the upper
+-- confidence bound for trees (UCT) algorithm.
+-- NOTE: not total when the IntMap is empty, but only called when guarded by the
+-- size of the map. TODO: Clean up.
 uct :: Word
     -- ^ treeNumVisits of parent node
     -> Double
     -- ^ exploration factor C_p > 0
-    -> (Word -> Double)
+    -> (Int -> Double)
     -- ^ Function assigning each child index to the number of times it has
     -- been visited.
-    -> V.Vector Double
-    -- ^ Scaled hypervolume scores
+    -> IM.IntMap Double
+    -- ^ map from child index to hypervolume scores
+    -> Word
+    -- ^ discreteChoiceMax
     -> Word
     -- ^ index of best child
-uct n c_p numVisits scores =
-  -- TODO: not total!
-  fst $ maximumBy (comparing f) (zip [0..] (toList scores))
-  where f (ix,score) = let denom = numVisits ix
-                           numer :: Double
-                           numer = 2.0 * log (fromIntegral n)
-                           in score + 2.0 * sqrt (numer/denom)
+uct n c_p numVisits hyperVols maxIndex =
+  fromIntegral $ minimumBy (comparing f) ([0..maxIndex] :: [Word])
+  where f :: Word -> Maybe Double
+        f ix =
+          case IM.lookup (fromIntegral ix) scaledHyperVols of
+            Nothing -> Nothing
+            Just hypervol ->
+              let
+                denom = numVisits (fromIntegral ix)
+                numer :: Double
+                numer = 2.0 * log (fromIntegral n)
+                -- note: we negate the standard equation so that when denom = 0,
+                -- we return Nothing and minimumBy considers Nothing less than
+                -- any other value.
+                in Just $ negate $ hypervol + 2.0 * c_p * sqrt (numer/denom)
+        maxHyperVol = maximum (map snd (toList hyperVols))
+        scaledHyperVols = IM.map (/maxHyperVol) hyperVols
 
--- TODO: this is ignoring the possibility that xs is empty!
-choose :: ChoiceInfo a -> OptInstr intermed -> RVarT IO (Chosen intermed)
-choose DiscreteChoice{..} (UniformChoice xs) =
-  case IM.size expandedChoices of
-    0 -> do
-      discreteChosenIndex <- fromIntegral <$> uniformT 0 discreteChoiceMax
-      let chosenChoice = (xs V.! discreteChosenIndex)
+choose :: MCTSOpts
+       -> Tree a
+       -> OptInstr intermed
+       -> RVarT IO (Maybe (Chosen intermed))
+choose MCTSOpts{..} t@(DiscreteBranch _ _ _) (UniformChoice xs) =
+  case (IM.size (expandedChoices t), V.length xs) of
+    (_, 0) -> return Nothing
+    (0, l) -> do
+      discreteChosenIndex <- fromIntegral <$> uniformT 0 (l - 1)
+      let chosenChoice = xs V.! discreteChosenIndex
       let isChosenNew = True
-      return DiscreteChosen{..}
-    _ -> do
+      return $ Just DiscreteChosen{..}
+    (_, l) -> do
       let refpoint = foldr1 (U.zipWith min) $
                      map snd $
                      concatMap toList $
-                     map (treeFrontier . snd) $ toList expandedChoices
+                     map (treeFrontier . snd) $ toList (expandedChoices t)
       let hyperVols = IM.map (hypervolume refpoint . treeFrontier)
-                             expandedChoices
-      let maxHyperVol = maximum (map snd (toList hyperVols))
-      let scaledHyperVols = IM.map (/maxHyperVol) hyperVols
-      let numChildVisits ix = case IM.lookup ix expandedChoices of
+                             (expandedChoices t)
+      let numChildVisits ix = case IM.lookup ix (expandedChoices t) of
                                Nothing -> 0.0
-                               Just t -> fromIntegral $ treeNumVisits t
-      return undefined
+                               Just (Leaf n) -> fromIntegral n
+                               Just b -> fromIntegral $ numVisits b
+      let discreteChosenIndex = fromIntegral $
+                                uct (numVisits t)
+                                    explorationFactor
+                                    numChildVisits
+                                    hyperVols
+                                    (fromIntegral $ l - 1)
+      let chosenChoice = xs V.! discreteChosenIndex
+      let isChosenNew = not $ isJust $
+                        IM.lookup discreteChosenIndex (expandedChoices t)
+      return $ Just DiscreteChosen{..}
+choose _ (Leaf _) _ =
+  error "impossible case in choose"
 
-defaultStrategy :: Opt a -> RVarT IO a
-defaultStrategy = toRVarT
+defaultStrategy :: Opt a -> RVarT IO (Maybe a)
+defaultStrategy = runOpt
+
+-- | Initialize an empty tree for a new problem.
+initTree :: Opt a -> Tree a
+initTree (Opt o) = case view o of
+  Return _ -> Leaf {numVisits = 0}
+  ((UniformChoice _) :>>= _) ->
+    DiscreteBranch {
+      _treeFrontier = mempty,
+      numVisits = 0,
+      expandedChoices = IM.empty}
+
+-- | Initialize a new subtree from a single random rollout.
+initDiscreteSubtree :: Opt a -> (a, U.Vector Double) -> Tree a
+initDiscreteSubtree (Opt o) (sampled, objs) = case view o of
+  (Return _) -> Leaf 1
+  _ -> DiscreteBranch {
+    _treeFrontier = insert (sampled, objs) mempty,
+    numVisits = 1,
+    expandedChoices = IM.empty
+  }
 
 -- | one iteration of MCTS for a given tree. Adds one sample.
 -- Returns the updated tree along with the sample that was added to the tree
 -- and its evaluation.
-mctsAddSample :: Opt a
-                 -> (a -> U.Vector Double)
+mctsAddSample :: MCTSOpts
+                 -> Opt a
+                 -> (a -> IO (U.Vector Double))
                  -> Tree a
-                 -> RVarT IO (Tree a, a, U.Vector Double)
-mctsAddSample (Opt o) eval t = case (view o, t) of
-  (Return x, Leaf) -> return (Leaf, x, eval x)
+                 -> RVarT IO (Maybe (Tree a, a, U.Vector Double))
+mctsAddSample opts@MCTSOpts{..} (Opt o) eval t = case (view o, t) of
+  (Return x, Leaf n) -> do objs <- liftIO $ eval x
+                           return $ Just (Leaf (n+1), x, objs)
   (Return _, _) -> error "impossible case 1 in mctsAddSample"
-  (_ :>>= _, Leaf) -> error "impossible case 2 in mctsAddSample"
-  (choice :>>= m, b@Branch{..}) -> do
-    chosen <- choose treeChoiceInfo choice
-    case isChosenNew chosen of
-      True -> do
-        sampled <- defaultStrategy (Opt (m (chosenChoice chosen)))
-        let objs = eval sampled
-        let b' = b { treeFrontier = insert (sampled, objs) treeFrontier,
-                     treeNumVisits = treeNumVisits + 1,
-                     treeChoiceInfo = updateChoiceInfo chosen treeChoiceInfo}
-        return (b', sampled, objs)
-      False -> do
-        let nextStep = Opt (m (chosenChoice chosen))
-        let ix = discreteChosenIndex chosen
-        let oldSubtree = expandedChoices treeChoiceInfo IM.! ix
-        (newSubtree, sampled, objs) <- mctsAddSample nextStep eval oldSubtree
-        let newExpandedChoices = IM.insert ix newSubtree (expandedChoices treeChoiceInfo)
-        let b' = b { treeFrontier = insert (sampled, objs) treeFrontier,
-                     treeNumVisits = treeNumVisits + 1,
-                     treeChoiceInfo = treeChoiceInfo {expandedChoices = newExpandedChoices}}
-        return (b', sampled, objs)
-
-
+  (_ :>>= _, Leaf _) -> error "impossible case 2 in mctsAddSample"
+  (choice :>>= m, b@DiscreteBranch{..}) -> do
+    chosen <- choose opts b choice
+    -- TODO: lot of repetition within these cases, and both cases can be changed
+    -- to use updateChoiceInfo.
+    -- TODO: standardize naming of intermediate vars. Some are newX, others x'
+    case chosen of
+      Just c@(DiscreteChosen _ _ True) -> do
+        let nextStep = Opt (m (chosenChoice c))
+        res <- defaultStrategy nextStep
+        case res of
+          Nothing -> return Nothing
+          Just sampled -> do
+            objs <- liftIO $ eval sampled
+            let b' = insertSubResult opts
+                                     (initDiscreteSubtree nextStep (sampled, objs),
+                                      c,
+                                      sampled,
+                                      objs)
+                                     b
+            return $ Just (b', sampled, objs)
+      Just c@(DiscreteChosen _ _ False) -> do
+        let nextStep = Opt (m (chosenChoice c))
+        let ix = discreteChosenIndex c
+        let oldSubtree = expandedChoices IM.! ix
+        res <- mctsAddSample opts nextStep eval oldSubtree
+        case res of
+          Nothing -> return Nothing
+          Just (newSubtree, sampled, objs) -> do
+            let b' = insertSubResult opts (newSubtree, c, sampled, objs) b
+            return $ Just (b', sampled, objs)
+      Nothing -> return Nothing
 
 -- TODO: this isn't quite right. Nested MCTS records the globally best sequence
 -- and always plays the move from that sequence, even if it wasn't found in the
--- current step.
+-- current step. Need to add a StateT.
 
 -- | basic nested MCTS, no tree returned.
 -- Returns a non-dominated solution if one can be found.
@@ -143,7 +279,7 @@ nested (Opt o) eval l = case (view o, l) of
   (Return x, _) -> return $ Just (x, eval x)
   (((UniformChoice xs) :>>= m), 1) -> do
     let subtrees = V.map (Opt . m) xs
-    sampled <- (V.map (\x -> (x, eval x))) <$> mapM toRVarT subtrees
+    sampled <- (V.map (\(Just x) -> (x, eval x))) <$> V.filter isJust <$> mapM runOpt subtrees
     return $ maximumByMay (domOrdering `on` snd) sampled
   (((UniformChoice xs) :>>= m), i) -> do
     subresults <- asum <$> forM xs (\a -> do
@@ -155,6 +291,3 @@ nested (Opt o) eval l = case (view o, l) of
     case bestMove of
       Nothing -> return Nothing
       Just x -> nested (Opt (m x)) eval (i-1)
-
-
-

@@ -127,12 +127,12 @@ insertionOrder = testCase "insertion order doesn't affect Frontier output" $ do
 hypervolume2d :: TestTree
 hypervolume2d = testCase "some hypervolume test cases" $ do
   let vecs = [[1,2],[2,1]]
-  hypervolume [0,0] vecs @?= 3
-  hypervolume [2,2] vecs @?= -1
-  hypervolume [-1,-1] vecs @?= 8
+  wfg [0,0] vecs @?= 3
+  wfg [2,2] vecs @?= -1
+  wfg [-1,-1] vecs @?= 8
 
 hypervolume3d :: TestTree
 hypervolume3d = testCase "3d hypervolume test cases" $ do
-  hypervolume [0,0,0] [[1,2,3]] @?= 6
-  hypervolume [0,0,1] [[1,2,3]] @?= 4
-  hypervolume [0,0,0] [[1,1,2], [2,1,1]] @?= 3
+  wfg [0,0,0] [[1,2,3]] @?= 6
+  wfg [0,0,1] [[1,2,3]] @?= 4
+  wfg [0,0,0] [[1,1,2], [2,1,1]] @?= 3

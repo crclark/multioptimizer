@@ -170,10 +170,12 @@ crowdingDists Frontier{..} =
 -- members.
 shrinkToSize :: Word -> Frontier a -> Frontier a
 shrinkToSize maxItems f@Frontier{..} =
-  let sortedByCrowding = V.modify (Merge.sortBy (comparing $ negate . snd))
-                         (V.zip frontier (crowdingDists f))
-      in f{frontier = V.take (fromIntegral maxItems)
-                             (V.map fst sortedByCrowding)}
+  if V.length frontier > (fromIntegral maxItems)
+    then let sortedByCrowding = V.modify (Merge.sortBy (comparing $ negate . snd))
+                                         (V.zip frontier (crowdingDists f))
+             in f{frontier = V.take (fromIntegral maxItems)
+                                    (V.map fst sortedByCrowding)}
+    else f
 
 -- | https://stackoverflow.com/a/1780582
 -- TODO: this becomes Inf after being put in the crowdingDists vector. Bug?

@@ -1,6 +1,8 @@
 {-# LANGUAGE GADTs, ExistentialQuantification, Rank2Types, ScopedTypeVariables #-}
 {-# LANGUAGE UndecidableInstances, MultiParamTypeClasses, FlexibleInstances #-}
 {-# LANGUAGE ApplicativeDo #-}
+
+{-# OPTIONS_GHC -fno-warn-unused-binds #-}
 -- Search for UndecidableInstances to see why this is needed
 
 {-
@@ -40,7 +42,6 @@ module Multioptimizer.Util.Operational (
 
 import Control.Monad.Identity
 import Control.Monad.Trans
-import Control.Applicative
 
     -- mtl  classes to instantiate.
     -- Those commented out cannot be instantiated. For reasons see below.
@@ -419,7 +420,6 @@ countVisibleOps (RawInstr (ReadFile _)) = 1
 countVisibleOps (RawInstr (WriteFile _ _)) = 1
 countVisibleOps (x :>>= _) = countVisibleOps x
 countVisibleOps (f :<*> x) = countVisibleOps f + countVisibleOps x
-countVisibleOps _ = 0
 
 -- TODO: the code below is quite weird. Simplify.
 
