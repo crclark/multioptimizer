@@ -19,7 +19,8 @@ units = testGroup "MCTS tests"
                   [ maximizeEmpty,
                   maximizeTrivial,
                     uctUnvisited,
-                    maximizeRecursive
+                    maximizeRecursive,
+                    maximizeSum
                   ]
 
 maximizeEmpty :: TestTree
@@ -63,9 +64,21 @@ genTreeOfDepth n = do goLeft <- uniform [True, False]
 
 maximizeRecursive :: TestTree
 maximizeRecursive = testCase "mcts finds optimal path through small tree" $ do
-  let
   result <- mcts defaultOpts{maxSolutions = 1} (genTreeOfDepth 3) scoreTree
   let resTree = head $ map fst $ toList $ treeFrontier result
   assertEqual "found leftward tree"
               (TBranch (TBranch (TBranch TLeaf TLeaf) TLeaf) TLeaf)
               resTree
+
+maximizeSum :: TestTree
+maximizeSum = testCase "mcts maximizes sum of list" $ do
+  let gen :: Int -> Opt [Int]
+      gen 1 = uniform [1..5] >>= return . return
+      gen n = do x <- uniform [1..5]
+                 xs <- gen (n-1)
+                 return (x:xs)
+  result <- mcts defaultOpts{maxSolutions = 1, timeLimitMillis = 3000}
+                 (gen 10)
+                 (return . U.singleton . sum . map fromIntegral)
+  let resList = head $ map fst $ toList $ treeFrontier result
+  assertEqual "all 5s" (replicate 10 5) resList

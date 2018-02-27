@@ -9,6 +9,15 @@ module Multioptimizer.Internal where
 import Control.Monad.Operational (Program, singleton)
 import Data.Vector (Vector)
 
+-- TODO: add a OrderedUniformChoice instruction for the case where the input
+-- choices have a natural ordering. This allows us to repeatedly bisect them,
+-- and thus share reward information between nearby values.
+-- See: DeepArchitect: Automatically Designing and Training Deep Architectures
+-- by Negrinho and Gordon, 2017.
+-- That paper finds that MCTS doesn't outperform random search without that
+-- optimization.
+
+
 data OptInstr a where
   UniformChoice :: Vector a -> OptInstr a
   --Maximize :: Double -> OptInstr ()

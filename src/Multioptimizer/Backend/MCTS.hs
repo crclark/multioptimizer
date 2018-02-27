@@ -4,20 +4,22 @@
 
 module Multioptimizer.Backend.MCTS where
 
+import Control.Error (hoistMaybe)
+import Control.Monad
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Operational (ProgramViewT(Return,(:>>=)), view)
+import Control.Monad.Trans.Class (lift)
+import Control.Monad.Trans.Maybe (MaybeT, runMaybeT)
 import Data.Foldable (minimumBy)
 import Data.Function (on)
 import Data.IORef (newIORef)
 import Data.Ord (comparing)
-import Data.Maybe (isJust)
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 import qualified Data.IntMap.Strict as IM
 import Data.Random (RVarT, runRVarTWith, uniformT)
 import Data.Random.Source.IO ()
 import Data.Random.Source.PureMT (newPureMT, pureMT)
-import Data.Foldable (asum)
 import Data.Traversable (forM)
 import Data.Word (Word64)
 import Safe.Foldable (maximumByMay)
@@ -62,9 +64,7 @@ defaultOpts = MCTSOpts {
 -- vector of choices, and whether we have chosen this branch before.
 data Chosen intermed = DiscreteChosen {
   discreteChosenIndex :: Int,
-  chosenChoice :: intermed,
-  isChosenNew :: Bool
-  -- ^ True iff we have chosen to expand a branch we haven't explored before
+  chosenChoice :: intermed
 } deriving Show
 
 insertSubResult :: MCTSOpts
@@ -117,12 +117,17 @@ mcts opts@MCTSOpts{..} o objFunction = do
           case (outOfTime, outOfIters) of
             (True, _) -> return t
             (_, Just True) -> return t
-            _ -> do res <- mctsAddSample opts o objFunction t
+            _ -> do res <- runMaybeT $ mctsAddSample opts o objFunction t
                     case res of
                       Nothing -> go t startTime (iters+1)
                       Just (t', _, _) -> go t' startTime (iters+1)
 
-
+-- TODO: this uct is slightly wrong as-is. The problem is that it's supposed to
+-- be using the *average* reward of a given choice, but we're using the
+-- current hypervolume. This could be kind of like the average, except that
+-- the user's evaluation function could be noisy. In that case, the elitism of
+-- our Pareto front means that we always prefer the highest value of the eval
+-- function for any given sampled structure. That would seem to be biased.
 
 -- | Selects the index of the best child node to visit, using the upper
 -- confidence bound for trees (UCT) algorithm.
@@ -162,15 +167,14 @@ uct n c_p numVisits hyperVols maxIndex =
 choose :: MCTSOpts
        -> Tree a
        -> OptInstr intermed
-       -> RVarT IO (Maybe (Chosen intermed))
+       -> MaybeT (RVarT IO) (Chosen intermed)
 choose MCTSOpts{..} t@(DiscreteBranch _ _ _) (UniformChoice xs) =
   case (IM.size (expandedChoices t), V.length xs) of
-    (_, 0) -> return Nothing
+    (_, 0) -> mzero
     (0, l) -> do
-      discreteChosenIndex <- fromIntegral <$> uniformT 0 (l - 1)
+      discreteChosenIndex <- fromIntegral <$> (lift $ uniformT 0 (l - 1))
       let chosenChoice = xs V.! discreteChosenIndex
-      let isChosenNew = True
-      return $ Just DiscreteChosen{..}
+      return DiscreteChosen{..}
     (_, l) -> do
       let refpoint = foldr1 (U.zipWith min) $
                      map snd $
@@ -189,13 +193,11 @@ choose MCTSOpts{..} t@(DiscreteBranch _ _ _) (UniformChoice xs) =
                                     hyperVols
                                     (fromIntegral $ l - 1)
       let chosenChoice = xs V.! discreteChosenIndex
-      let isChosenNew = not $ isJust $
-                        IM.lookup discreteChosenIndex (expandedChoices t)
-      return $ Just DiscreteChosen{..}
+      return DiscreteChosen{..}
 choose _ (Leaf _) _ =
   error "impossible case in choose"
 
-defaultStrategy :: Opt a -> RVarT IO (Maybe a)
+defaultStrategy :: Opt a -> MaybeT (RVarT IO) a
 defaultStrategy = runOpt
 
 -- | Initialize an empty tree for a new problem.
@@ -225,43 +227,25 @@ mctsAddSample :: MCTSOpts
                  -> Opt a
                  -> (a -> IO (U.Vector Double))
                  -> Tree a
-                 -> RVarT IO (Maybe (Tree a, a, U.Vector Double))
+                 -> MaybeT (RVarT IO) (Tree a, a, U.Vector Double)
 mctsAddSample opts@MCTSOpts{..} (Opt o) eval t = case (view o, t) of
   (Return x, Leaf n) -> do objs <- liftIO $ eval x
-                           return $ Just (Leaf (n+1), x, objs)
-  (Return _, _) -> error "impossible case 1 in mctsAddSample"
-  (_ :>>= _, Leaf _) -> error "impossible case 2 in mctsAddSample"
+                           return (Leaf (n+1), x, objs)
+  (Return _, _) -> error "impossible case in mctsAddSample"
+  (_, Leaf _) -> do
+    sampled <- defaultStrategy (Opt o)
+    objs <- liftIO $ eval sampled
+    return (initDiscreteSubtree (Opt o) (sampled, objs), sampled, objs)
   (choice :>>= m, b@DiscreteBranch{..}) -> do
     chosen <- choose opts b choice
-    -- TODO: lot of repetition within these cases, and both cases can be changed
-    -- to use updateChoiceInfo.
     -- TODO: standardize naming of intermediate vars. Some are newX, others x'
     case chosen of
-      Just c@(DiscreteChosen _ _ True) -> do
-        let nextStep = Opt (m (chosenChoice c))
-        res <- defaultStrategy nextStep
-        case res of
-          Nothing -> return Nothing
-          Just sampled -> do
-            objs <- liftIO $ eval sampled
-            let b' = insertSubResult opts
-                                     (initDiscreteSubtree nextStep (sampled, objs),
-                                      c,
-                                      sampled,
-                                      objs)
-                                     b
-            return $ Just (b', sampled, objs)
-      Just c@(DiscreteChosen _ _ False) -> do
-        let nextStep = Opt (m (chosenChoice c))
-        let ix = discreteChosenIndex c
-        let oldSubtree = expandedChoices IM.! ix
-        res <- mctsAddSample opts nextStep eval oldSubtree
-        case res of
-          Nothing -> return Nothing
-          Just (newSubtree, sampled, objs) -> do
-            let b' = insertSubResult opts (newSubtree, c, sampled, objs) b
-            return $ Just (b', sampled, objs)
-      Nothing -> return Nothing
+      dc@(DiscreteChosen ix c) -> do
+        let nextStep = Opt (m c)
+        let subtree = IM.findWithDefault (Leaf 0) ix expandedChoices
+        (newSubtree, sampled, objs) <- mctsAddSample opts nextStep eval subtree
+        let b' = insertSubResult opts (newSubtree, dc, sampled, objs) b
+        return (b', sampled, objs)
 
 -- TODO: this isn't quite right. Nested MCTS records the globally best sequence
 -- and always plays the move from that sequence, even if it wasn't found in the
@@ -274,20 +258,17 @@ nested :: Opt a
           -- ^ evaluation function
           -> Int
           -- ^ levels before just random sampling
-          -> RVarT IO (Maybe (a, U.Vector Double))
+          -> MaybeT (RVarT IO) (a, U.Vector Double)
 nested (Opt o) eval l = case (view o, l) of
-  (Return x, _) -> return $ Just (x, eval x)
+  (Return x, _) -> return (x, eval x)
   (((UniformChoice xs) :>>= m), 1) -> do
     let subtrees = V.map (Opt . m) xs
-    sampled <- (V.map (\(Just x) -> (x, eval x))) <$> V.filter isJust <$> mapM runOpt subtrees
-    return $ maximumByMay (domOrdering `on` snd) sampled
+    sampled <- (V.map (\x -> (x, eval x))) <$> mapM runOpt subtrees
+    hoistMaybe $ maximumByMay (domOrdering `on` snd) sampled
   (((UniformChoice xs) :>>= m), i) -> do
-    subresults <- asum <$> forM xs (\a -> do
-                    nestedRes <- nested (Opt $ m a) eval (i-1)
-                    return (fmap (\(res,score) -> (a,res,score)) nestedRes))
-    let trd (_,_,z) = z
-    let fst3 (x,_,_) = x
-    let bestMove = fst3 <$> maximumByMay (domOrdering `on` trd) subresults
-    case bestMove of
-      Nothing -> return Nothing
-      Just x -> nested (Opt (m x)) eval (i-1)
+    subresults <- forM xs (\x -> do
+                    (_,score) <- nested (Opt $ m x) eval (i-1)
+                    return (x, score))
+    bestMove <- hoistMaybe $
+                fst <$> maximumByMay (domOrdering `on` snd) subresults
+    nested (Opt (m bestMove)) eval (i-1)

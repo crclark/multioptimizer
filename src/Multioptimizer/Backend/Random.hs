@@ -8,6 +8,9 @@ module Multioptimizer.Backend.Random (
 import Multioptimizer.Internal
 
 import Data.Functor.Identity (Identity)
+import Control.Monad
+import Control.Monad.Trans.Class (lift)
+import Control.Monad.Trans.Maybe (MaybeT, runMaybeT)
 import Control.Monad.Operational (ProgramViewT(Return,(:>>=)), view)
 import Data.Random (sampleState, RVarT, uniformT)
 import Data.Random.Source.PureMT (pureMT)
@@ -21,14 +24,16 @@ sample :: Opt a
           -> Word64
           -- ^ Random seed
           -> Maybe a
-sample a seed = fst $ sampleState (runOpt @ Identity a) (pureMT seed)
+sample a seed =
+  let randAction = runMaybeT $ runOpt @ Identity a
+      in fst $ sampleState randAction (pureMT seed)
 
-runOpt :: Monad m => Opt a-> RVarT m (Maybe a)
+runOpt :: Monad m => Opt a -> MaybeT (RVarT m) a
 runOpt (Opt o) = case view o of
-  Return x -> return (Just x)
+  Return x -> return x
   ((UniformChoice xs) :>>= m) -> do
     if V.null xs
-      then return Nothing
+      then mzero
       else do
-        ix <- Data.Random.uniformT 0 (V.length xs - 1)
+        ix <- lift $ Data.Random.uniformT 0 (V.length xs - 1)
         runOpt $ Opt $ m $ xs V.! ix

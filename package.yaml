@@ -25,12 +25,14 @@ dependencies:
 - vector-algorithms
 - operational
 - list-t
+- transformers
 - mtl
 - containers
 - random-source
 - random-fu # many deps for this one
 - clock
 - safe
+- errors
 
 library:
   source-dirs: src
