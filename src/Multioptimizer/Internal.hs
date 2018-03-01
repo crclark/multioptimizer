@@ -16,7 +16,8 @@ import Data.Vector (Vector)
 -- by Negrinho and Gordon, 2017.
 -- That paper finds that MCTS doesn't outperform random search without that
 -- optimization.
-
+-- I believe we could add this without adding a new OptInstr by creating a
+-- helper combinator that translates into a tree of UniformChoices.
 
 data OptInstr a where
   UniformChoice :: Vector a -> OptInstr a
