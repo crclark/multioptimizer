@@ -30,9 +30,17 @@ import Multioptimizer.Internal
 import GHC.Exts(IsList(..))
 import System.Clock (getTime, Clock(Monotonic), toNanoSecs)
 
+-- | Specifies whether the objectives in an objectives vector should be
+-- maximized or minimized. Currently, only maximization problems are supported.
+data ObjectiveType = Maximize
+  deriving (Show, Eq)
+
 -- | Options for one run of Monte Carlo tree search. See 'defaultOpts' for
 -- defaults.
 data MCTSOpts = MCTSOpts {
+  objectiveType :: ObjectiveType,
+  -- ^ Whether the objectives should be 'Maximize'd or 'Minimize'd. We do not
+  -- yet support mixing maximization and minimization objectives in one problem.
   timeLimitMillis :: Word,
   -- ^ Maximum time to search
   maxIters :: Maybe Word,
@@ -57,7 +65,8 @@ data MCTSOpts = MCTSOpts {
 -- | A set of reasonable default options.
 defaultOpts :: MCTSOpts
 defaultOpts = MCTSOpts
-  { timeLimitMillis   = 1000
+  { objectiveType = Maximize
+  , timeLimitMillis   = 1000
   , maxIters          = Nothing
   , explorationFactor = 1.0 / sqrt 2.0
   , maxSolutions      = 100
@@ -176,7 +185,10 @@ uct n c_p numVisits hyperVols maxIndex = fromIntegral
       -- we return Nothing and minimumBy considers Nothing less than
       -- any other value.
   maxHyperVol     = maximum (map snd (toList hyperVols))
-  scaledHyperVols = IM.map (/ maxHyperVol) hyperVols
+  minHyperVol     = minimum (map snd (toList hyperVols))
+  scaledHyperVols = IM.map (\hv -> (hv - minHyperVol)
+                                   / (maxHyperVol - minHyperVol))
+                           hyperVols
 
 choose
   :: MCTSOpts
