@@ -5,6 +5,7 @@ module Multioptimizer.Util.Pareto (
   emptyFrontier,
   getFrontier,
   insert,
+  insertSized,
   insertQuery,
   shrinkToSize,
   hypervolume,

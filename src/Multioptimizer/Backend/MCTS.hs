@@ -83,40 +83,40 @@ data Chosen intermed = DiscreteChosen {
 
 insertSubResult
   :: MCTSOpts
-  -> (Tree a, Chosen intermed, a, U.Vector Double)
+  -> (Tree, Chosen intermed, U.Vector Double)
                 -- ^ Subtree, chosen branch, subresult, its evaluation
-  -> Tree a
+  -> Tree
                 -- ^ current tree
-  -> Tree a
+  -> Tree
                 -- ^ updated tree
 insertSubResult MCTSOpts {..}
-                (subtree, DiscreteChosen {..}, x, objs)
+                (subtree, DiscreteChosen {..}, objs)
                 DiscreteBranch {..}
   = DiscreteBranch
-    { _treeFrontier = shrinkToSize maxSolutions $ insert (x, objs) _treeFrontier
+    { _treeFrontier = shrinkToSize maxSolutions $ insert ((), objs) _treeFrontier
     , numVisits = numVisits + 1
     , expandedChoices = IM.insert discreteChosenIndex subtree expandedChoices
     }
 insertSubResult _ _ (Leaf _) = error "impossible case in insertSubResult"
 
-data Tree a = DiscreteBranch {
-  _treeFrontier :: Frontier a,
+data Tree = DiscreteBranch {
+  _treeFrontier :: Frontier (),
   numVisits :: Word,
   -- ^ Number of times we have passed through this choice. Note this is distinct
   -- from @size expandedChoices@, because we could take the same choice more
   -- than once.
-  expandedChoices :: IM.IntMap (Tree a)
+  expandedChoices :: IM.IntMap Tree
   -- ^ branches to choices that have already been expanded
 }
  | Leaf {numVisits :: Word}
   deriving Show
 
-treeFrontier :: Tree a -> Frontier a
+treeFrontier :: Tree -> Frontier ()
 treeFrontier (Leaf _) = mempty
 treeFrontier t        = _treeFrontier t
 
--- | Monte Carlo tree search, returning the resulting tree
-mcts :: MCTSOpts -> Opt a -> (a -> IO (U.Vector Double)) -> IO (Tree a)
+-- | Monte Carlo tree search, returning the resulting frontier
+mcts :: MCTSOpts -> Opt a -> (a -> IO (U.Vector Double)) -> IO (Frontier a)
 mcts opts@MCTSOpts {..} o objFunction = do
   startTime  <- liftIO currMillis
   randSource <- case randomSeed of
@@ -124,21 +124,24 @@ mcts opts@MCTSOpts {..} o objFunction = do
       mt <- liftIO newPureMT
       liftIO (newIORef mt)
     Just s -> liftIO $ newIORef $ pureMT s
-  runRVarTWith liftIO (go (initTree o) startTime 0) randSource
+  runRVarTWith liftIO (go mempty (initTree o) startTime 0) randSource
  where
   currMillis = (`div` 1000000) . toNanoSecs <$> getTime Monotonic
-  go t startTime !iters = do
+  go frontier t startTime !iters = do
     currTime <- liftIO currMillis
     let outOfTime  = currTime - startTime > fromIntegral timeLimitMillis
     let outOfIters = (== iters) <$> maxIters
     case (outOfTime, outOfIters) of
-      (True, _        ) -> return t
-      (_   , Just True) -> return t
+      (True, _        ) -> return frontier
+      (_   , Just True) -> return frontier
       _                 -> do
         res <- runMaybeT $ mctsAddSample opts o objFunction t
         case res of
-          Nothing         -> go t startTime (iters + 1)
-          Just (t', _, _) -> go t' startTime (iters + 1)
+          Nothing         -> go frontier t startTime (iters + 1)
+          Just (t', x, objs) -> go (insertSized (x, objs) maxSolutions frontier)
+                                   t'
+                                   startTime
+                                   (iters + 1)
 
 -- TODO: this uct is slightly wrong as-is. The problem is that it's supposed to
 -- be using the *average* reward of a given choice, but we're using the
@@ -146,6 +149,9 @@ mcts opts@MCTSOpts {..} o objFunction = do
 -- the user's evaluation function could be noisy. In that case, the elitism of
 -- our Pareto front means that we always prefer the highest value of the eval
 -- function for any given sampled structure. That would seem to be biased.
+
+-- TODO: another way in which it's maybe wrong: it scales the relative rewards
+-- by the worst and best alternatives available.
 
 -- TODO: this uct selects unvisited nodes in the order they appear in the
 -- input vector. This should be documented somewhere, or, even better, we should
@@ -192,7 +198,7 @@ uct n c_p numVisits hyperVols maxIndex = fromIntegral
 
 choose
   :: MCTSOpts
-  -> Tree a
+  -> Tree
   -> OptInstr intermed
   -> MaybeT (RVarT IO) (Chosen intermed)
 choose MCTSOpts {..} t@DiscreteBranch{} (UniformChoice xs) =
@@ -227,7 +233,7 @@ defaultStrategy :: Opt a -> MaybeT (RVarT IO) a
 defaultStrategy = runOpt
 
 -- | Initialize an empty tree for a new problem.
-initTree :: Opt a -> Tree a
+initTree :: Opt a -> Tree
 initTree (Opt o) = case view o of
   Return _                 -> Leaf {numVisits = 0}
   (UniformChoice _ :>>= _) -> DiscreteBranch
@@ -237,11 +243,11 @@ initTree (Opt o) = case view o of
     }
 
 -- | Initialize a new subtree from a single random rollout.
-initDiscreteSubtree :: Opt a -> (a, U.Vector Double) -> Tree a
-initDiscreteSubtree (Opt o) (sampled, objs) = case view o of
+initDiscreteSubtree :: Opt a -> U.Vector Double -> Tree
+initDiscreteSubtree (Opt o) objs = case view o of
   (Return _) -> Leaf 1
   _          -> DiscreteBranch
-    { _treeFrontier   = insert (sampled, objs) mempty
+    { _treeFrontier   = insert ((), objs) mempty
     , numVisits       = 1
     , expandedChoices = IM.empty
     }
@@ -253,8 +259,8 @@ mctsAddSample
   :: MCTSOpts
   -> Opt a
   -> (a -> IO (U.Vector Double))
-  -> Tree a
-  -> MaybeT (RVarT IO) (Tree a, a, U.Vector Double)
+  -> Tree
+  -> MaybeT (RVarT IO) (Tree, a, U.Vector Double)
 mctsAddSample opts@MCTSOpts {..} (Opt o) eval t = case (view o, t) of
   (Return x, Leaf n) -> do
     objs <- liftIO $ eval x
@@ -263,7 +269,7 @@ mctsAddSample opts@MCTSOpts {..} (Opt o) eval t = case (view o, t) of
   (_       , Leaf _) -> do
     sampled <- defaultStrategy (Opt o)
     objs    <- liftIO $ eval sampled
-    return (initDiscreteSubtree (Opt o) (sampled, objs), sampled, objs)
+    return (initDiscreteSubtree (Opt o) objs, sampled, objs)
   (choice :>>= m, b@DiscreteBranch {..}) -> do
     chosen <- choose opts b choice
     -- TODO: standardize naming of intermediate vars. Some are newX, others x'
@@ -272,7 +278,7 @@ mctsAddSample opts@MCTSOpts {..} (Opt o) eval t = case (view o, t) of
         let nextStep = Opt (m c)
         let subtree  = IM.findWithDefault (Leaf 0) ix expandedChoices
         (newSubtree, sampled, objs) <- mctsAddSample opts nextStep eval subtree
-        let b' = insertSubResult opts (newSubtree, dc, sampled, objs) b
+        let b' = insertSubResult opts (newSubtree, dc, objs) b
         return (b', sampled, objs)
 
 -- TODO: this isn't quite right. Nested MCTS records the globally best sequence

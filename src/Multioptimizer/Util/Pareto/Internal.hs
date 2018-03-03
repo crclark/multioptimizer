@@ -135,6 +135,9 @@ insert
   -> Frontier a
 insert x f = fst (insertQuery x f)
 
+insertSized :: (a, U.Vector Double) -> Word -> Frontier a -> Frontier a
+insertSized x s f = shrinkToSize s $ insert x f
+
 -- | Scale all objectives to be between 0 and 1
 scaleObjs :: V.Vector (U.Vector Double) -> V.Vector (U.Vector Double)
 scaleObjs vs = if V.length vs < 2

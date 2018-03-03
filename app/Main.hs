@@ -29,5 +29,5 @@ main = do
   let gen = uniform [1.0,2.0,3.0]
   result <- mcts defaultOpts{maxSolutions = 1,
                              timeLimitMillis = 1} gen (\x -> return [x])
-  let resNums = map fst (toList (treeFrontier result))
+  let resNums = map fst (toList result)
   print resNums

@@ -29,7 +29,7 @@ maximizeEmpty :: TestTree
 maximizeEmpty = testCase "maximize empty problem" $ do
   let gen = uniform []
   result <- mcts defaultOpts gen (\x -> return [x])
-  let res = toList $ treeFrontier result
+  let res = toList result
   assertEqual "Result is empty" [] res
 
 maximizeTrivial :: TestTree
@@ -38,7 +38,7 @@ maximizeTrivial = testCase "maximize trivial objective" $ do
   result <- mcts defaultOpts { maxSolutions = 1, timeLimitMillis = 1 }
                  gen
                  (\x -> return [x])
-  let resNums = map fst (toList (treeFrontier result))
+  let resNums = map fst (toList result)
   assertEqual "Pareto front has one occupant" 1   (length resNums)
   assertEqual "discovered solution is three"  3.0 (head resNums)
 
@@ -70,7 +70,7 @@ genTreeOfDepth n = do
 maximizeRecursive :: TestTree
 maximizeRecursive = testCase "mcts finds optimal path through small tree" $ do
   result <- mcts defaultOpts { maxSolutions = 1 } (genTreeOfDepth 3) scoreTree
-  let resTree = head $ map fst $ toList $ treeFrontier result
+  let resTree = head $ map fst $ toList result
   assertEqual "found leftward tree"
               (TBranch (TBranch (TBranch TLeaf TLeaf) TLeaf) TLeaf)
               resTree
@@ -95,5 +95,5 @@ maximizeSum = testCase "mcts maximizes sum of list" $ do
   result <- mcts defaultOpts { maxSolutions = 1, timeLimitMillis = 3000 }
                  (n5s 10)
                  (return . U.singleton . sum . map fromIntegral)
-  let resList = head $ map fst $ toList $ treeFrontier result
+  let resList = head $ map fst $ toList result
   assertEqual "all 5s" (replicate 10 5) resList

@@ -63,6 +63,5 @@ main = do
       let lim = read (head args)
       coords <- loadTSP (args !! 1)
       let tspOpt = evalStateT tsp (fromList coords)
-      result <- mcts defaultOpts{timeLimitMillis = lim*1000, randomSeed = Just 12} tspOpt scoreTSP
-      let frontier = treeFrontier result
+      frontier <- mcts defaultOpts{timeLimitMillis = lim*1000, randomSeed = Just 12} tspOpt scoreTSP
       print $ snd $ head $ toList frontier
