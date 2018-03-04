@@ -98,7 +98,10 @@ instance Semigroup Tree where
     DiscreteBranch (tf1 <> tf2) (n1 + n2) (IM.unionWith (<>) ec1 ec2)
   (Leaf n1) <> (Leaf n2) =
     Leaf (n1 + n2)
-  _ <> _ = error "impossible case in Tree Semigroup instance"
+  (Leaf n1) <> (DiscreteBranch tf2 n2 ec2) =
+    DiscreteBranch tf2 (n1 + n2) ec2
+  (DiscreteBranch tf1 n1 ec1) <> (Leaf n2) =
+    DiscreteBranch tf1 (n1 + n2) ec1
 
 instance Monoid Tree where
   mempty = Leaf 0
@@ -211,9 +214,24 @@ initDiscreteSubtree (Opt o) objs = case view o of
     , expandedChoices = IM.empty
     }
 
+-- TODO: we currently don't remember the route through the tree once we get
+-- to the defaultStrategy (random simulation). This is a holdover from MCTS's
+-- standard pseudocode, meant for 2-player games, where large chunks of the
+-- tree eventually become irrelevant because of actions by the opponent.
+-- These limitations don't apply here, though.
+
+-- If we did add the entire random simulation to the tree, the current
+-- Tree representation would make it appear that we had entered "choice mode"
+-- all the way down to the return statement along that path through the tree,
+-- which isn't actually true. The problem is that the Leaf constructor currently
+-- has two meanings: 1. corresponding to a return statement and 2. corresponding
+-- to the switchover to the default strategy.
+
 -- | one iteration of MCTS for a given tree. Adds one sample.
--- Returns the updated tree along with the sample that was added to the tree
--- and its evaluation.
+-- Returns the subtree corresponding to the choices taken to construct the new
+-- sample, the new sample, and its evaluation. Does *not* return the full
+-- updated tree! The caller is responsible for 'mappend'ing the returned tree
+-- to the input tree if desired.
 mctsAddSample
   :: MCTSOpts
   -> Opt a
@@ -221,9 +239,9 @@ mctsAddSample
   -> Tree
   -> MaybeT (RVarT IO) (Tree, a, U.Vector Double)
 mctsAddSample opts@MCTSOpts {..} (Opt o) eval t = case (view o, t) of
-  (Return x, Leaf n) -> do
+  (Return x, Leaf _) -> do
     objs <- liftIO $ eval x
-    return (Leaf (n + 1), x, objs)
+    return (Leaf 1, x, objs)
   (Return _, _     ) -> error "impossible case in mctsAddSample"
   (_       , Leaf _) -> do
     sampled <- defaultStrategy (Opt o)
@@ -237,7 +255,7 @@ mctsAddSample opts@MCTSOpts {..} (Opt o) eval t = case (view o, t) of
         let nextStep = Opt (m c)
         let subtree  = IM.findWithDefault (Leaf 0) ix expandedChoices
         (newSubtree, sampled, objs) <- mctsAddSample opts nextStep eval subtree
-        let b' = insertSubResult opts (newSubtree, dc, objs) b
+        let b' = insertSubResult opts (newSubtree, dc, objs) $ initDiscreteSubtree (Opt o) objs
         return (b', sampled, objs)
 
 -- TODO: this isn't quite right. Nested MCTS records the globally best sequence

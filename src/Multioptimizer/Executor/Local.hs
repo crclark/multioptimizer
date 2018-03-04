@@ -1,11 +1,19 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE PartialTypeSignatures #-}
 
 module Multioptimizer.Executor.Local where
 
+import Control.Concurrent.Async (async, cancel)
+import Control.Concurrent.STM (atomically, newTVarIO, newTBQueueIO, readTVarIO,
+                               modifyTVar', writeTBQueue, tryReadTBQueue,
+                               flushTBQueue)
+import Control.Monad (forever, replicateM, forM_)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Maybe (runMaybeT)
+import Data.Foldable (foldl')
 import Data.IORef (newIORef)
+import Data.Monoid ((<>))
 import qualified Data.Vector.Unboxed as U
 import Data.Random (runRVarTWith)
 import Data.Random.Source.IO ()
@@ -36,9 +44,10 @@ data Options = Options {
   -- running time, just memory usage. If the number of solutions found during
   -- the search exceeds this number, we remove the most crowded ones to stay
   -- below this number.
-  randomSeed :: Maybe Word64
+  randomSeed :: Maybe Word64,
   -- ^ Random seed to use for reproducibility.
   -- If 'Nothing', uses system randomness.
+  numThreads :: Word
 } deriving (Show, Eq)
 
 defaultOptions :: Options
@@ -48,6 +57,7 @@ defaultOptions = Options
   , maxIters          = Nothing
   , maxSolutions      = 100
   , randomSeed        = Nothing
+  , numThreads        = 1
   }
 
 runSearch :: Options
@@ -62,21 +72,53 @@ runSearch Options{..} o objFunction (Backend sample) = do
       mt <- liftIO newPureMT
       liftIO (newIORef mt)
     Just s -> liftIO $ newIORef $ pureMT s
-  runRVarTWith liftIO (go mempty mempty startTime 0) randSource
+  sharedState <- newTVarIO mempty
+  queue <- newTBQueueIO (fromIntegral $ 10*numThreads)
+  workers <- replicateM (fromIntegral numThreads)
+                        (async (worker sharedState queue randSource))
+  runRVarTWith liftIO
+               (consumer workers sharedState queue mempty startTime 0)
+               randSource
+
  where
+
+  stopCondition :: Bool -> Maybe Bool -> Bool
+  stopCondition True _ = True
+  stopCondition _ (Just True) = True
+  stopCondition _ _ = False
+
   currMillis = (`div` 1000000) . toNanoSecs <$> getTime Monotonic
-  go frontier t startTime !iters = do
+
+  worker sharedState queue randSource =
+    flip (runRVarTWith liftIO) randSource $ forever $ do
+      t <- liftIO $ readTVarIO sharedState
+      res <- runMaybeT $ sample o objFunction t
+      forM_ res $ \tuple@(t', _, objs) ->
+        objs `seq` t' `seq` liftIO $ atomically $ writeTBQueue queue tuple
+
+  -- TODO: at first a producer/consumer made sense, but now it seems like
+  -- overkill -- the producers could atomically swap all their results directly
+  -- into the shared state. Leaving this as producer/consumer for now just in
+  -- case it becomes necessary for some unforeseen reason. If not, remove.
+  consumer workers sharedState queue frontier startTime !iters = do
     currTime <- liftIO currMillis
     let outOfTime  = currTime - startTime > fromIntegral timeLimitMillis
     let outOfIters = (== iters) <$> maxIters
-    case (outOfTime, outOfIters) of
-      (True, _        ) -> return frontier
-      (_   , Just True) -> return frontier
-      _                 -> do
-        res <- runMaybeT $ sample o objFunction t
+    if stopCondition outOfTime outOfIters
+      then do
+        liftIO $ forM_ workers cancel
+        rest <- liftIO $ atomically $ flushTBQueue queue
+        let frontier' = foldl' (\f (_,x,objs) ->
+                                 insertSized (x,objs) maxSolutions f)
+                               frontier
+                               rest
+        return frontier'
+      else do
+        res <- liftIO $ atomically $ tryReadTBQueue queue
         case res of
-          Nothing         -> go frontier t startTime (iters + 1)
-          Just (t', x, objs) -> go (insertSized (x, objs) maxSolutions frontier)
-                                   t'
-                                   startTime
-                                   (iters + 1)
+          Just (t,x,objs) -> do
+            let frontier' = insertSized (x,objs) maxSolutions frontier
+            liftIO $ atomically $ modifyTVar' sharedState (<> t)
+            consumer workers sharedState queue frontier' startTime (iters + 1)
+          Nothing -> do
+            consumer workers sharedState queue frontier startTime iters

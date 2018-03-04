@@ -33,6 +33,8 @@ dependencies:
 - clock
 - safe
 - errors
+- stm
+- async
 
 library:
   source-dirs: src

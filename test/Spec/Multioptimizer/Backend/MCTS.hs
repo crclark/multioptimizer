@@ -40,7 +40,7 @@ maximizeEmpty = testCase "maximize empty problem" $ do
 maximizeTrivial :: TestTree
 maximizeTrivial = testCase "maximize trivial objective" $ do
   let gen = uniform [1.0, 2.0, 3.0]
-  result <- run defaultOptions { maxSolutions = 1, timeLimitMillis = 1 }
+  result <- run defaultOptions { maxSolutions = 1, timeLimitMillis = 10 }
                  gen
                  (\x -> return [x])
   let resNums = map fst (toList result)
