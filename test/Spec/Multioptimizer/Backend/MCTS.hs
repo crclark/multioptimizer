@@ -1,10 +1,13 @@
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 
 module Spec.Multioptimizer.Backend.MCTS where
 
 import Multioptimizer
 import Multioptimizer.Backend.MCTS
+import Multioptimizer.Backend.MCTS.Internal
+import Multioptimizer.Executor.Local
 import Multioptimizer.Util.Pareto
 
 import qualified Data.Vector as V
@@ -25,17 +28,19 @@ units = testGroup
   , maximizeSum
   ]
 
+run opts o f = runSearch opts o f (mcts defaultOpts)
+
 maximizeEmpty :: TestTree
 maximizeEmpty = testCase "maximize empty problem" $ do
   let gen = uniform []
-  result <- mcts defaultOpts gen (\x -> return [x])
+  result <- run defaultOptions gen (\x -> return [x])
   let res = toList result
   assertEqual "Result is empty" [] res
 
 maximizeTrivial :: TestTree
 maximizeTrivial = testCase "maximize trivial objective" $ do
   let gen = uniform [1.0, 2.0, 3.0]
-  result <- mcts defaultOpts { maxSolutions = 1, timeLimitMillis = 1 }
+  result <- run defaultOptions { maxSolutions = 1, timeLimitMillis = 1 }
                  gen
                  (\x -> return [x])
   let resNums = map fst (toList result)
@@ -69,7 +74,7 @@ genTreeOfDepth n = do
 
 maximizeRecursive :: TestTree
 maximizeRecursive = testCase "mcts finds optimal path through small tree" $ do
-  result <- mcts defaultOpts { maxSolutions = 1 } (genTreeOfDepth 3) scoreTree
+  result <- run defaultOptions { maxSolutions = 1 } (genTreeOfDepth 3) scoreTree
   let resTree = head $ map fst $ toList result
   assertEqual "found leftward tree"
               (TBranch (TBranch (TBranch TLeaf TLeaf) TLeaf) TLeaf)
@@ -78,7 +83,7 @@ maximizeRecursive = testCase "mcts finds optimal path through small tree" $ do
 maximizeRecursiveNested :: TestTree
 maximizeRecursiveNested =
   testCase "nested mcts finds optimal path through small tree" $ do
-    (Just (x, _)) <- nestedMCTS defaultOpts (genTreeOfDepth 3) scoreTree 3
+    (Just (x, _)) <- nestedMCTS defaultOpts (genTreeOfDepth 3) scoreTree 3 Nothing
     assertEqual "found leftward tree"
                 (TBranch (TBranch (TBranch TLeaf TLeaf) TLeaf) TLeaf)
                 x
@@ -92,7 +97,7 @@ n5s n = do
 
 maximizeSum :: TestTree
 maximizeSum = testCase "mcts maximizes sum of list" $ do
-  result <- mcts defaultOpts { maxSolutions = 1, timeLimitMillis = 3000 }
+  result <- run defaultOptions { maxSolutions = 1, timeLimitMillis = 3000 }
                  (n5s 10)
                  (return . U.singleton . sum . map fromIntegral)
   let resList = head $ map fst $ toList result

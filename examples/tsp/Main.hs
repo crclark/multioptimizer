@@ -9,7 +9,8 @@ anyway.
 module Main where
 
 import Multioptimizer (Opt, uniform)
-import Multioptimizer.Backend.MCTS (mcts, MCTSOpts(..), defaultOpts, treeFrontier)
+import Multioptimizer.Backend.MCTS (mcts, MCTSOpts(..), defaultOpts)
+import Multioptimizer.Executor.Local (Options(..), defaultOptions, runSearch)
 
 import Control.Monad.State.Strict (StateT, evalStateT, get, put, lift)
 import Data.Maybe (mapMaybe)
@@ -63,5 +64,8 @@ main = do
       let lim = read (head args)
       coords <- loadTSP (args !! 1)
       let tspOpt = evalStateT tsp (fromList coords)
-      frontier <- mcts defaultOpts{timeLimitMillis = lim*1000, randomSeed = Just 12} tspOpt scoreTSP
+      frontier <- runSearch defaultOptions{timeLimitMillis = lim*1000, randomSeed = Just 12}
+                            tspOpt
+                            scoreTSP
+                            (mcts defaultOpts)
       print $ snd $ head $ toList frontier

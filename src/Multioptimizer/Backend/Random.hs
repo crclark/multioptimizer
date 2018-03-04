@@ -8,22 +8,19 @@ module Multioptimizer.Backend.Random (
 , randomSearch
 ) where
 
+import Multioptimizer.Backend.Internal (Backend(..))
 import Multioptimizer.Internal
-import Multioptimizer.Util.Pareto
 
 import Data.Functor.Identity (Identity)
-import Data.IORef (newIORef)
 import Control.Monad
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Maybe (MaybeT, runMaybeT)
 import Control.Monad.Operational (ProgramViewT(Return,(:>>=)), view)
-import Data.Random (sampleState, RVarT, uniformT, runRVarTWith)
-import Data.Random.Source.PureMT (pureMT, newPureMT)
+import Data.Random (sampleState, RVarT, uniformT)
+import Data.Random.Source.PureMT (pureMT)
 import qualified Data.Vector as V
-import qualified Data.Vector.Unboxed as U
 import Data.Word
-import System.Clock (getTime, Clock(Monotonic), toNanoSecs)
 
 -- | Create a single random sample of the given generator.
 -- We return 'Maybe a' because a generator can fail to produce a value.
@@ -46,41 +43,9 @@ runOpt (Opt o) = case view o of
       ix <- lift $ Data.Random.uniformT 0 (V.length xs - 1)
       runOpt $ Opt $ m $ xs V.! ix
 
-data RandomOpts = RandomOpts {
-  timeLimitMillis :: Word,
-  maxIters :: Maybe Word,
-  maxSolutions :: Word,
-  randomSeed :: Maybe Word64
-} deriving Show
-
--- TODO: lots of repetition between this and MCTS equivalent.
--- We will eventually need to add a swappable execution layer that abstracts
--- this loop (and that can handle parallel and distributed execution).
-
-randomSearch
-  :: RandomOpts -> Opt a -> (a -> IO (U.Vector Double)) -> IO (Frontier a)
-randomSearch RandomOpts {..} o eval = do
-  startTime  <- liftIO currMillis
-  randSource <- case randomSeed of
-    Nothing -> do
-      mt <- liftIO newPureMT
-      liftIO (newIORef mt)
-    Just s -> liftIO $ newIORef $ pureMT s
-  runRVarTWith liftIO (go startTime 0 mempty) randSource
- where
-  currMillis = (`div` 1000000) . toNanoSecs <$> getTime Monotonic
-  go startTime !iters front = do
-    currTime <- liftIO currMillis
-    let outOfTime  = currTime - startTime > fromIntegral timeLimitMillis
-    let outOfIters = (== iters) <$> maxIters
-    case (outOfTime, outOfIters) of
-      (True, _        ) -> return front
-      (_   , Just True) -> return front
-      _                 -> do
-        res <- runMaybeT $ runOpt o
-        case res of
-          Nothing -> go startTime (iters + 1) front
-          Just x  -> do
-            objs <- liftIO (eval x)
-            let front' = shrinkToSize maxSolutions $ insert (x, objs) front
-            go startTime (iters + 1) front'
+randomSearch :: Backend a
+randomSearch =
+  Backend (\o f () -> do s <- runOpt o
+                         objs <- liftIO $ f s
+                         return ((), s, objs))
+          (const ())
