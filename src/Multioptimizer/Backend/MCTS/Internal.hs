@@ -49,7 +49,7 @@ defaultOpts = MCTSOpts
   }
 
 mcts :: MCTSOpts -> Backend a
-mcts opts = Backend (mctsAddSample opts) initTree
+mcts opts = Backend (mctsAddSample opts)
 
 -- | Represents a chosen branch at a given step of traversing the tree.
 -- Contains the intermediate value chosen, the index of that value in the
@@ -99,6 +99,10 @@ instance Semigroup Tree where
   (Leaf n1) <> (Leaf n2) =
     Leaf (n1 + n2)
   _ <> _ = error "impossible case in Tree Semigroup instance"
+
+instance Monoid Tree where
+  mempty = Leaf 0
+  mappend = (<>)
 
 treeFrontier :: Tree -> Frontier ()
 treeFrontier (Leaf _) = mempty
@@ -195,13 +199,7 @@ defaultStrategy = runOpt
 
 -- | Initialize an empty tree for a new problem.
 initTree :: Opt a -> Tree
-initTree (Opt o) = case view o of
-  Return _                 -> Leaf {numVisits = 0}
-  (UniformChoice _ :>>= _) -> DiscreteBranch
-    { _treeFrontier   = mempty
-    , numVisits       = 0
-    , expandedChoices = IM.empty
-    }
+initTree = const mempty
 
 -- | Initialize a new subtree from a single random rollout.
 initDiscreteSubtree :: Opt a -> U.Vector Double -> Tree

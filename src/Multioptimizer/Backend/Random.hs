@@ -44,8 +44,7 @@ runOpt (Opt o) = case view o of
       runOpt $ Opt $ m $ xs V.! ix
 
 randomSearch :: Backend a
-randomSearch =
-  Backend (\o f () -> do s <- runOpt o
-                         objs <- liftIO $ f s
-                         return ((), s, objs))
-          (const ())
+randomSearch = Backend $ \o f () -> do
+  s <- runOpt o
+  objs <- liftIO $ f s
+  return ((), s, objs)

@@ -55,14 +55,14 @@ runSearch :: Options
           -> (a -> IO (U.Vector Double))
           -> Backend a
           -> IO (Frontier a)
-runSearch Options{..} o objFunction (Backend sample initState) = do
+runSearch Options{..} o objFunction (Backend sample) = do
   startTime  <- liftIO currMillis
   randSource <- case randomSeed of
     Nothing -> do
       mt <- liftIO newPureMT
       liftIO (newIORef mt)
     Just s -> liftIO $ newIORef $ pureMT s
-  runRVarTWith liftIO (go mempty (initState o) startTime 0) randSource
+  runRVarTWith liftIO (go mempty mempty startTime 0) randSource
  where
   currMillis = (`div` 1000000) . toNanoSecs <$> getTime Monotonic
   go frontier t startTime !iters = do
