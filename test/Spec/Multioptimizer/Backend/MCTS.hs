@@ -28,7 +28,7 @@ units = testGroup
   , maximizeSum
   ]
 
-run opts o f = runSearch opts o f (mcts defaultOpts)
+run opts o f = resultFront <$> runSearch opts o f (mcts defaultOpts)
 
 maximizeEmpty :: TestTree
 maximizeEmpty = testCase "maximize empty problem" $ do
@@ -98,7 +98,7 @@ n5s n = do
 maximizeSum :: TestTree
 maximizeSum = testCase "mcts maximizes sum of list" $ do
   result <- run defaultOptions { maxSolutions = 1, timeLimitMillis = 3000 }
-                 (n5s 10)
+                 (n5s 7)
                  (return . U.singleton . sum . map fromIntegral)
   let resList = head $ map fst $ toList result
-  assertEqual "all 5s" (replicate 10 5) resList
+  assertEqual "all 5s" (replicate 7 5) resList

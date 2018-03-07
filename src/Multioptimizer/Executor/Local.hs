@@ -50,6 +50,11 @@ data Options = Options {
   numThreads :: Word
 } deriving (Show, Eq)
 
+data SearchResult a = SearchResult {
+  resultFront :: Frontier a,
+  resultTotalIters :: Word
+} deriving (Show)
+
 defaultOptions :: Options
 defaultOptions = Options
   { objectiveType = Maximize
@@ -64,7 +69,7 @@ runSearch :: Options
           -> Opt a
           -> (a -> IO (U.Vector Double))
           -> Backend a
-          -> IO (Frontier a)
+          -> IO (SearchResult a)
 runSearch Options{..} o objFunction (Backend sample) = do
   startTime  <- liftIO currMillis
   randSource <- case randomSeed of
@@ -108,11 +113,12 @@ runSearch Options{..} o objFunction (Backend sample) = do
       then do
         liftIO $ forM_ workers cancel
         rest <- liftIO $ atomically $ flushTBQueue queue
-        let frontier' = foldl' (\f (_,x,objs) ->
-                                 insertSized (x,objs) maxSolutions f)
-                               frontier
-                               rest
-        return frontier'
+        let resultFront = foldl' (\f (_,x,objs) ->
+                                  insertSized (x,objs) maxSolutions f)
+                                 frontier
+                                 rest
+        let resultTotalIters = iters + (fromIntegral $ length rest)
+        return SearchResult{..}
       else do
         res <- liftIO $ atomically $ tryReadTBQueue queue
         case res of
@@ -120,5 +126,5 @@ runSearch Options{..} o objFunction (Backend sample) = do
             let frontier' = insertSized (x,objs) maxSolutions frontier
             liftIO $ atomically $ modifyTVar' sharedState (<> t)
             consumer workers sharedState queue frontier' startTime (iters + 1)
-          Nothing -> do
+          Nothing ->
             consumer workers sharedState queue frontier startTime iters
