@@ -11,9 +11,13 @@
 module Main where
 
 import Multioptimizer
+import Multioptimizer.Backend.MCTS
 import Multioptimizer.Executor.Local
+import Multioptimizer.Util.Pareto
 
 import GHC.Generics (Generic)
+import GHC.IO.Exception(ExitCode(ExitSuccess))
+import Control.Exception(bracket_)
 import Data.Aeson
 import Data.Aeson.Casing
 import qualified Data.ByteString.Lazy as BS
@@ -26,6 +30,10 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Typeable (Typeable)
 import qualified Data.Vector as V
+import qualified Data.Vector.Unboxed as U
+import System.Directory (removeFile)
+import System.Process (readProcessWithExitCode)
+import Text.Pretty.Simple
 
 -- All types below correspond to the Keras model JSON format.
 -- Higher-level types amenable to a Keras DSL will be introduced later.
@@ -330,5 +338,88 @@ testNetwork = Model {
   outputLayers = [layerRef dense_3]
 }
 
+evalModel :: Model -> IO (U.Vector Double)
+evalModel m = bracket_ writeModel delModel $ do
+  let args = ["python", "examples/keras/run_mnist.py", "temp.json"]
+  t@(exitCode, stdout, stderr) <- readProcessWithExitCode "optirun" args ""
+  if exitCode /= ExitSuccess
+    -- TODO: proper error handling
+    then do pPrint m
+            fail $ "got bad exit " ++ stderr
+    else return $ U.fromList $ map read $ lines stdout
+  -- TODO: randomize file name?
+  -- TODO: use turtle? overkill for now
+  where writeModel = BS.writeFile "temp.json" $ encode m
+        delModel = removeFile "temp.json"
+
+defaultDense :: Text -> NodeRef -> Layer
+defaultDense name nr = Layer conf [[nr]]
+    where conf = Dense {
+      name = name,
+      trainable = True,
+      dtype = Float32,
+      units = 10,
+      activation = Relu,
+      useBias = True,
+      kernelInitializer = defaultVarianceScaling,
+      biasInitializer = Just defaultVarianceScaling,
+      kernelRegularizer = Nothing,
+      biasRegularizer = Nothing,
+      activityRegularizer = Nothing,
+      kernelConstraint = Nothing,
+      biasConstraint = Nothing
+    }
+
+denseLayer :: Text -> Layer -> Opt Layer
+denseLayer name l = do
+  activation <- uniform [Relu, Selu, Linear, Tanh, Sigmoid]
+  units <- uniform [10,100,200,500]
+  reg <- uniform [L1L2 0.0 1.0, L1L2 1.0 0.0]
+  let dense = defaultDense name (layerRef l)
+  let denseConf = config dense
+  return $ dense{config = denseConf {activation = activation,
+                                     units = units,
+                                     kernelRegularizer = Just reg,
+                                     biasRegularizer = Just reg}}
+
+outputLayer :: Text -> Layer -> Opt Layer
+outputLayer n l = do
+  reg <- uniform [L1L2 0.0 1.0, L1L2 1.0 0.0]
+  let dense = defaultDense n (layerRef l)
+  let denseConf = config dense
+  return $ dense {config = denseConf {activation = Softmax,
+                                      units = 10,
+                                      kernelRegularizer = Just reg,
+                                      biasRegularizer = Just reg}}
+
+denseLayers :: Layer -> Int -> Opt [Layer]
+denseLayers _ 0 = return []
+denseLayers priorLayer n = do
+  newLayer <- denseLayer (T.pack $ show n) priorLayer
+  rest <- denseLayers newLayer (n-1)
+  return (newLayer:rest)
+
+stackedDense :: Opt Model
+stackedDense = do
+  numLayers <- uniform [1,2,3,4,5]
+  layers <- denseLayers input_1 numLayers
+  let lastLayer = last layers
+  out <- outputLayer "out" lastLayer
+  return $ Model {
+    backend = TensorFlow,
+    kerasVersion = "2.0.8-tf" :: Version,
+    layers = out:input_1:layers,
+    inputLayers = [layerRef input_1],
+    outputLayers = [layerRef out]
+  }
+
 main :: IO ()
-main = BS.writeFile "test_output.json" $ encode testNetwork
+main = do
+  result <- runSearch Multioptimizer.Executor.Local.defaultOptions {
+                        timeLimitMillis = 1000 * 60 * 30
+                      }
+                      stackedDense
+                      evalModel
+                      (mcts defaultOpts)
+  putStrLn $ show $ hypervolume (U.fromList $ take 10 $ cycle [0.0]) $ resultFront result
+  putStrLn $ show $ resultTotalIters result

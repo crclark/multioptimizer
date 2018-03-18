@@ -1,6 +1,8 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE PartialTypeSignatures #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 module Multioptimizer.Executor.Local where
 
@@ -8,7 +10,8 @@ import Control.Concurrent.Async (async, cancel)
 import Control.Concurrent.STM (atomically, newTVarIO, newTBQueueIO, readTVarIO,
                                modifyTVar', writeTBQueue, tryReadTBQueue,
                                flushTBQueue)
-import Control.Monad (forever, replicateM, forM_)
+import Control.Exception (catches, Handler(..), ErrorCall)
+import Control.Monad (forever, replicateM, forM_, when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Maybe (runMaybeT)
 import Data.Foldable (foldl')
@@ -23,6 +26,7 @@ import Multioptimizer.Backend.Internal (Backend(..))
 import Multioptimizer.Util.Pareto
 import Multioptimizer.Internal
 import System.Clock (getTime, Clock(Monotonic), toNanoSecs)
+import System.IO.Error (IOError)
 
 -- | Specifies whether the objectives in an objectives vector should be
 -- maximized or minimized. Currently, only maximization problems are supported.
@@ -47,7 +51,13 @@ data Options = Options {
   randomSeed :: Maybe Word64,
   -- ^ Random seed to use for reproducibility.
   -- If 'Nothing', uses system randomness.
-  numThreads :: Word
+  -- If provided, must be used with 'numThreads' == 1.
+  numThreads :: Word,
+  -- ^ Number of threads to use to simultaneously run searches on. If greater
+  -- than 1, your provided evaluation function will be called simultaneously
+  -- by multiple threads.
+  verbose :: Bool
+  -- ^ If True, logs metrics to stdout and caught errors to stderr
 } deriving (Show, Eq)
 
 data SearchResult a = SearchResult {
@@ -63,6 +73,7 @@ defaultOptions = Options
   , maxSolutions      = 100
   , randomSeed        = Nothing
   , numThreads        = 1
+  , verbose           = True
   }
 
 runSearch :: Options
@@ -95,11 +106,21 @@ runSearch Options{..} o objFunction (Backend sample) = do
   currMillis = (`div` 1000000) . toNanoSecs <$> getTime Monotonic
 
   worker sharedState queue randSource =
-    flip (runRVarTWith liftIO) randSource $ forever $ do
+    forever $ ignoreUserErrors $ flip (runRVarTWith liftIO) randSource $ do
       t <- liftIO $ readTVarIO sharedState
       res <- runMaybeT $ sample o objFunction t
       forM_ res $ \tuple@(t', _, objs) ->
         objs `seq` t' `seq` liftIO $ atomically $ writeTBQueue queue tuple
+
+  logIfVerbose x = when verbose $ putStrLn x
+
+  ignoreUserErrors :: IO () -> IO ()
+  ignoreUserErrors =
+    flip catches
+         [ Handler (\(e :: IOError) ->
+                     logIfVerbose $ "Ignored an IOError: " ++ show e),
+           Handler (\(e :: ErrorCall) ->
+                     logIfVerbose $ "Ignored a call to `error`: " ++ show e)]
 
   -- TODO: at first a producer/consumer made sense, but now it seems like
   -- overkill -- the producers could atomically swap all their results directly

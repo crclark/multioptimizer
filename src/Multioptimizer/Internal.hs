@@ -9,7 +9,7 @@ module Multioptimizer.Internal where
 import Control.Monad.Operational (Program, singleton)
 import Data.Vector (Vector)
 
--- TODO: add a OrderedUniformChoice instruction for the case where the input
+-- TODO: add an OrderedUniformChoice instruction for the case where the input
 -- choices have a natural ordering. This allows us to repeatedly bisect them,
 -- and thus share reward information between nearby values.
 -- See: DeepArchitect: Automatically Designing and Training Deep Architectures
@@ -18,6 +18,9 @@ import Data.Vector (Vector)
 -- optimization.
 -- I believe we could add this without adding a new OptInstr by creating a
 -- helper combinator that translates into a tree of UniformChoices.
+-- On the other hand, if we did add another OptInstr, the interpreter could
+-- choose to do something sophisticated with it, or translate it into a bisect
+-- operation then.
 
 data OptInstr a where
   UniformChoice :: Vector a -> OptInstr a

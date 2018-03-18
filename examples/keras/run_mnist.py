@@ -1,16 +1,24 @@
+import numpy as np
 from tensorflow.python.keras.layers import Input, Dense
 from tensorflow.python.keras.models import Model, model_from_json
 from tensorflow.python.keras import regularizers
+from sklearn.model_selection import StratifiedKFold
 from sklearn.datasets import fetch_mldata
+from sklearn.metrics import classification_report
 from sklearn.preprocessing import OneHotEncoder
+import argparse
+
+parser = argparse.ArgumentParser(description='Process some integers.')
+parser.add_argument('model',
+                    help='path to JSON model')
+args = parser.parse_args()
 
 mnist = fetch_mldata('MNIST original')
 data = mnist.data
-one_hot = OneHotEncoder(sparse=False)
-labels = one_hot.fit_transform(mnist.target.reshape(-1, 1))
-
-print(data.shape)
-print(labels.shape)
+n_samples = len(data)
+ohc = OneHotEncoder(sparse=False)
+labels = ohc.fit_transform(mnist.target.reshape(-1, 1))
+n_labels = 10
 
 def mk_model():
   x = Dense(64, activation='relu')(inputs)
@@ -25,16 +33,37 @@ def load_model(filepath):
   with open(filepath,'r') as f:
     return model_from_json(f.read())
 
-# This returns a tensor
+def accuracy_vec(real, predicted):
+  counts = np.array([0]*n_labels)
+  n_correct = np.array([0]*n_labels)
+  for pred_ix in range(len(predicted)):
+    pred_class = np.argmax(predicted[pred_ix])
+    real_class = np.argmax(real[pred_ix])
+    counts[real_class] += 1
+    if pred_class == real_class:
+      n_correct[real_class] += 1
+  return n_correct / counts
+
+def fit_and_eval_model(model, data_train, labels_train, data_test, labels_test):
+  model.fit(data_train, labels_train, epochs=1, verbose=0)
+  predicted = model.predict(data_test)
+  return accuracy_vec(labels_test, predicted)
+
 inputs = Input(shape=(784,))
+n_folds = 10
+skf = StratifiedKFold(n_splits=n_folds, shuffle=True)
 
-# a layer instance is callable on a tensor, and returns a tensor
+results = np.array([0.0]*n_labels)
 
-# This creates a model that includes
-# the Input layer and three Dense layers
-model = load_model("test_output.json")
-model.compile(optimizer='rmsprop',
-              loss='categorical_crossentropy',
-              metrics=['accuracy'])
-model.fit(data, labels)  # starts training
+for (train_indices, test_indices) in skf.split(data, mnist.target.reshape(-1,1)):
+  model = load_model(args.model)
+  model.compile(optimizer='rmsprop',
+                loss='categorical_crossentropy',
+                metrics=['accuracy'])
+  data_train, data_test = data[train_indices], data[test_indices]
+  labels_train, labels_test = labels[train_indices], labels[test_indices]
+  results += fit_and_eval_model(model, data_train, labels_train, data_test, labels_test)
 
+averaged_result = results / n_folds
+for i in range(n_labels):
+  print(averaged_result[i])
