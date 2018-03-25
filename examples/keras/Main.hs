@@ -423,17 +423,18 @@ instance ParseField SearchBackend
 instance ParseFields SearchBackend
 instance ParseRecord SearchBackend
 
-data MainOpts = MainOpts {searchBackend :: SearchBackend}
+data MainOpts = MainOpts {searchBackend :: SearchBackend,
+                          timeLimitMins :: Int}
   deriving (Show, Generic, Eq)
 
 instance ParseRecord MainOpts
 
 main :: IO ()
 main = do
-  MainOpts sb <- getRecord "Keras Example"
+  MainOpts sb timeLimit <- getRecord "Keras Example"
   let backend = if sb == MCTS then mcts defaultOpts else randomSearch
   result <- runSearch Multioptimizer.Executor.Local.defaultOptions {
-                        timeLimitMillis = 1000 * 60 * 60 * 3,
+                        timeLimitMillis = 1000 * 60 * fromIntegral timeLimit,
                         objBound = Just $ U.fromList $ take 10 $ cycle [0.0]
                       }
                       stackedDense

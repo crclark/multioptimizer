@@ -77,6 +77,9 @@ insertSubResult MCTSOpts {..}
     }
 insertSubResult _ _ (Leaf _) = error "impossible case in insertSubResult"
 
+-- | Represents the current state of the Monte Carlo search tree.
+-- Branches represent choices that have been expanded. Leaves are unexpanded
+-- parts of the tree that have not been explored yet.
 data Tree = DiscreteBranch {
   _treeFrontier :: Frontier (),
   numVisits :: Word,
