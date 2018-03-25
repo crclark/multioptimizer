@@ -45,12 +45,14 @@ def accuracy_vec(real, predicted):
   return n_correct / counts
 
 def fit_and_eval_model(model, data_train, labels_train, data_test, labels_test):
-  model.fit(data_train, labels_train, epochs=1, verbose=0)
+  # TODO: more epochs + early stopping
+  model.fit(data_train, labels_train, epochs=2, verbose=0)
   predicted = model.predict(data_test)
   return accuracy_vec(labels_test, predicted)
 
 inputs = Input(shape=(784,))
-n_folds = 10
+# TODO: mcts can already handle noisy objectives. Just use train/test split.
+n_folds = 3
 skf = StratifiedKFold(n_splits=n_folds, shuffle=True)
 
 results = np.array([0.0]*n_labels)

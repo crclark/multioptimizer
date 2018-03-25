@@ -26,6 +26,7 @@ import Multioptimizer.Backend.Internal (Backend(..))
 import Multioptimizer.Util.Pareto
 import Multioptimizer.Internal
 import System.Clock (getTime, Clock(Monotonic), toNanoSecs)
+import System.IO (hPutStrLn, stderr, hSetBuffering, stdout, BufferMode(..))
 import System.IO.Error (IOError)
 
 -- | Specifies whether the objectives in an objectives vector should be
@@ -56,8 +57,15 @@ data Options = Options {
   -- ^ Number of threads to use to simultaneously run searches on. If greater
   -- than 1, your provided evaluation function will be called simultaneously
   -- by multiple threads.
-  verbose :: Bool
+  verbose :: Bool,
   -- ^ If True, logs metrics to stdout and caught errors to stderr
+  objBound :: Maybe (U.Vector Double)
+  -- ^ Optional bound on the objective vector. This should be a min bound on
+  -- the objectives when 'objectiveType' is 'Maximize', and a max bound
+  -- otherwise. When provided and 'verbose' is
+  -- 'True', this will be used as the reference point to use when logging
+  -- hypervolume values after each new solution is computed. If not provided,
+  -- hypervolume values will not be logged.
 } deriving (Show, Eq)
 
 data SearchResult a = SearchResult {
@@ -74,6 +82,7 @@ defaultOptions = Options
   , randomSeed        = Nothing
   , numThreads        = 1
   , verbose           = True
+  , objBound       = Nothing
   }
 
 runSearch :: Options
@@ -82,6 +91,7 @@ runSearch :: Options
           -> Backend a
           -> IO (SearchResult a)
 runSearch Options{..} o objFunction (Backend sample) = do
+  hSetBuffering stdout LineBuffering
   startTime  <- liftIO currMillis
   randSource <- case randomSeed of
     Nothing -> do
@@ -118,9 +128,14 @@ runSearch Options{..} o objFunction (Backend sample) = do
   ignoreUserErrors =
     flip catches
          [ Handler (\(e :: IOError) ->
-                     logIfVerbose $ "Ignored an IOError: " ++ show e),
+                     hPutStrLn stderr $ "Ignored an IOError: " ++ show e),
            Handler (\(e :: ErrorCall) ->
-                     logIfVerbose $ "Ignored a call to `error`: " ++ show e)]
+                     hPutStrLn stderr $ "Ignored a call to `error`: " ++ show e)]
+
+  logHyperVolume :: Frontier a
+                 -> IO ()
+  logHyperVolume front =
+    mapM_ (logIfVerbose . show) $ fmap (flip hypervolume front) objBound
 
   -- TODO: at first a producer/consumer made sense, but now it seems like
   -- overkill -- the producers could atomically swap all their results directly
@@ -145,6 +160,7 @@ runSearch Options{..} o objFunction (Backend sample) = do
         case res of
           Just (t,x,objs) -> do
             let frontier' = insertSized (x,objs) maxSolutions frontier
+            liftIO $ logHyperVolume frontier'
             liftIO $ atomically $ modifyTVar' sharedState (<> t)
             consumer workers sharedState queue frontier' startTime (iters + 1)
           Nothing ->

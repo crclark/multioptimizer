@@ -12,9 +12,11 @@ module Main where
 
 import Multioptimizer
 import Multioptimizer.Backend.MCTS
+import Multioptimizer.Backend.Random
 import Multioptimizer.Executor.Local
 import Multioptimizer.Util.Pareto
 
+import GHC.Exts (IsList(..))
 import GHC.Generics (Generic)
 import GHC.IO.Exception(ExitCode(ExitSuccess))
 import Control.Exception(bracket_)
@@ -31,6 +33,7 @@ import qualified Data.Text as T
 import Data.Typeable (Typeable)
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
+import Options.Generic
 import System.Directory (removeFile)
 import System.Process (readProcessWithExitCode)
 import Text.Pretty.Simple
@@ -413,13 +416,28 @@ stackedDense = do
     outputLayers = [layerRef out]
   }
 
+data SearchBackend = MCTS | Random
+  deriving (Show, Generic, Eq, Read)
+
+instance ParseField SearchBackend
+instance ParseFields SearchBackend
+instance ParseRecord SearchBackend
+
+data MainOpts = MainOpts {searchBackend :: SearchBackend}
+  deriving (Show, Generic, Eq)
+
+instance ParseRecord MainOpts
+
 main :: IO ()
 main = do
+  MainOpts sb <- getRecord "Keras Example"
+  let backend = if sb == MCTS then mcts defaultOpts else randomSearch
   result <- runSearch Multioptimizer.Executor.Local.defaultOptions {
-                        timeLimitMillis = 1000 * 60 * 30
+                        timeLimitMillis = 1000 * 60 * 60 * 3,
+                        objBound = Just $ U.fromList $ take 10 $ cycle [0.0]
                       }
                       stackedDense
                       evalModel
-                      (mcts defaultOpts)
-  putStrLn $ show $ hypervolume (U.fromList $ take 10 $ cycle [0.0]) $ resultFront result
-  putStrLn $ show $ resultTotalIters result
+                      backend
+  putStrLn $ "total iterations: " ++ show (resultTotalIters result)
+  putStrLn $ "number of non-dominated solutions: " ++ (show $ length $ toList $ resultFront result)

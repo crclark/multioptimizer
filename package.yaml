@@ -77,6 +77,7 @@ executables:
     - process
     - directory
     - pretty-simple
+    - optparse-generic
 
 tests:
   multioptimizer-test:
