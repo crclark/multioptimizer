@@ -16,9 +16,9 @@ import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Maybe (runMaybeT)
 import Data.Foldable (foldl')
 import Data.IORef (newIORef)
-import Data.Monoid ((<>))
 import qualified Data.Vector.Unboxed as U
 import Data.Random (runRVarTWith)
+import Data.Random.Lift (lift)
 import Data.Random.Source.IO ()
 import Data.Random.Source.PureMT (newPureMT, pureMT)
 import Data.Word (Word64)
@@ -90,7 +90,7 @@ runSearch :: Options
           -> (a -> IO (U.Vector Double))
           -> Backend a
           -> IO (SearchResult a)
-runSearch Options{..} o objFunction (Backend sample) = do
+runSearch Options{..} o objFunction (Backend sample update) = do
   hSetBuffering stdout LineBuffering
   startTime  <- liftIO currMillis
   randSource <- case randomSeed of
@@ -102,9 +102,7 @@ runSearch Options{..} o objFunction (Backend sample) = do
   queue <- newTBQueueIO (fromIntegral $ 10*numThreads)
   workers <- replicateM (fromIntegral numThreads)
                         (async (worker sharedState queue randSource))
-  runRVarTWith liftIO
-               (consumer workers sharedState queue mempty startTime 0)
-               randSource
+  consumer workers sharedState queue mempty startTime 0
 
  where
 
@@ -118,9 +116,10 @@ runSearch Options{..} o objFunction (Backend sample) = do
   worker sharedState queue randSource =
     forever $ ignoreUserErrors $ flip (runRVarTWith liftIO) randSource $ do
       t <- liftIO $ readTVarIO sharedState
-      res <- runMaybeT $ sample o objFunction t
-      forM_ res $ \tuple@(t',_, _, objs) ->
-        objs `seq` t' `seq` liftIO $ atomically $ writeTBQueue queue tuple
+      res <- lift $ runMaybeT $ sample o t
+      forM_ res $ \(cs, x) -> do
+        objs <- liftIO $ objFunction x
+        objs `seq` liftIO $ atomically $ writeTBQueue queue (cs,x,objs)
 
   logIfVerbose x = when verbose $ putStrLn x
 
@@ -142,26 +141,26 @@ runSearch Options{..} o objFunction (Backend sample) = do
   -- into the shared state. Leaving this as producer/consumer for now just in
   -- case it becomes necessary for some unforeseen reason. If not, remove.
   consumer workers sharedState queue frontier startTime !iters = do
-    currTime <- liftIO currMillis
+    currTime <- currMillis
     let outOfTime  = currTime - startTime > fromIntegral timeLimitMillis
     let outOfIters = (== iters) <$> maxIters
     if stopCondition outOfTime outOfIters
       then do
-        liftIO $ forM_ workers cancel
-        rest <- liftIO $ atomically $ flushTBQueue queue
-        let resultFront = foldl' (\f (_,_,x,objs) ->
+        forM_ workers cancel
+        rest <- atomically $ flushTBQueue queue
+        let resultFront = foldl' (\f (_, x, objs) ->
                                   insertSized (x,objs) maxSolutions f)
                                  frontier
                                  rest
         let resultTotalIters = iters + (fromIntegral $ length rest)
         return SearchResult{..}
       else do
-        res <- liftIO $ atomically $ tryReadTBQueue queue
+        res <- atomically $ tryReadTBQueue queue
         case res of
-          Just (t,_,x,objs) -> do
+          Just (cs,x,objs) -> do
             let frontier' = insertSized (x,objs) maxSolutions frontier
-            liftIO $ logHyperVolume frontier'
-            liftIO $ atomically $ modifyTVar' sharedState (<> t)
+            logHyperVolume frontier'
+            atomically $ modifyTVar' sharedState (update cs objs)
             consumer workers sharedState queue frontier' startTime (iters + 1)
           Nothing ->
             consumer workers sharedState queue frontier startTime iters

@@ -17,7 +17,7 @@ import Data.Semigroup (Semigroup(..))
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 import qualified Data.IntMap.Strict as IM
-import Data.Random (RVarT, runRVarTWith, uniformT)
+import Data.Random (RVar, RVarT, runRVarTWith, uniformT)
 import Data.Random.Source.IO ()
 import Data.Random.Source.PureMT (newPureMT, pureMT)
 import Data.Traversable (forM)
@@ -48,7 +48,7 @@ defaultOpts = MCTSOpts
   }
 
 mcts :: MCTSOpts -> Backend a
-mcts opts = Backend (mctsAddSample opts)
+mcts opts = Backend (mctsAddSample opts) updateTree
 
 -- | Represents a chosen branch at a given step of traversing the tree.
 -- Contains the intermediate value chosen, the index of that value in the
@@ -121,6 +121,28 @@ treeFrontier :: Tree -> Frontier ()
 treeFrontier DiscreteBranch{..} = _treeFrontier
 treeFrontier _ = mempty
 
+updateTree :: [Breadcrumb] -> U.Vector Double -> Tree -> Tree
+updateTree [] _ t = t
+updateTree (DiscreteCrumb i : cs) objs DiscreteBranch{..} =
+  DiscreteBranch {
+    _treeFrontier = insert ((), objs) _treeFrontier,
+    numVisits = numVisits + 1,
+    expandedChoices = IM.alter (f cs) (fromIntegral i) expandedChoices
+  }
+  where f (DiscreteCrumb _ : _) Nothing =
+          Just $ DiscreteBranch (insert ((), objs) mempty) 1 IM.empty
+        f (ReturnCrumb : _) Nothing =
+          Just $ ReturnLeaf 1
+        f [] Nothing = error "DiscreteCrumb not followed by ReturnCrumb"
+        f _ (Just subtree) = Just $ updateTree cs objs subtree
+updateTree (DiscreteCrumb _ : _) objs Unvisited =
+  DiscreteBranch (insert ((), objs) mempty) 1 IM.empty
+updateTree [ReturnCrumb] _ (ReturnLeaf i) = ReturnLeaf (i + 1)
+updateTree [ReturnCrumb] _ Unvisited = ReturnLeaf 1
+updateTree (ReturnCrumb : _) _ _ =
+  error $ "impossible case 1 in updateTree"
+updateTree (DiscreteCrumb _ : _) _ (ReturnLeaf _) = error "impossible case 2 in updateTree"
+
 -- TODO: this uct is slightly wrong as-is. The problem is that it's supposed to
 -- be using the *average* reward of a given choice, but we're using the
 -- current hypervolume. This could be kind of like the average, except that
@@ -138,8 +160,6 @@ treeFrontier _ = mempty
 
 -- | Selects the index of the best child node to visit, using the upper
 -- confidence bound for trees (UCT) algorithm.
--- NOTE: not total when the IntMap is empty, but only called when guarded by the
--- size of the map. TODO: Clean up.
 uct
   :: Word
     -- ^ treeNumVisits of parent node
@@ -178,7 +198,7 @@ choose
   :: MCTSOpts
   -> Tree
   -> OptInstr intermed
-  -> MaybeT (RVarT IO) (Chosen intermed)
+  -> MaybeT RVar (Chosen intermed)
 choose MCTSOpts {..} t@DiscreteBranch{} (UniformChoice xs) =
   case V.length xs of
     0 -> mzero
@@ -253,16 +273,13 @@ initDiscreteSubtree (Opt o) objs = case view o of
 mctsAddSample
   :: MCTSOpts
   -> Opt a
-  -> (a -> IO (U.Vector Double))
   -> Tree
-  -> MaybeT (RVarT IO) (Tree, [Breadcrumb], a, U.Vector Double)
-mctsAddSample opts@MCTSOpts {..} (Opt o) eval t = case (view o, t) of
-  (Return x, ReturnLeaf i) -> do
-    objs <- liftIO $ eval x
-    return (ReturnLeaf (i+1), [ReturnCrumb], x, objs)
-  (Return x, Unvisited) -> do
-    objs <- liftIO $ eval x
-    return (ReturnLeaf 1, [ReturnCrumb], x, objs)
+  -> MaybeT RVar ([Breadcrumb], a)
+mctsAddSample opts@MCTSOpts {..} (Opt o) t = case (view o, t) of
+  (Return x, ReturnLeaf _) ->
+    return ([ReturnCrumb], x)
+  (Return x, Unvisited) ->
+    return ([ReturnCrumb], x)
   (_, ReturnLeaf _) -> error "impossible ReturnLeaf case in mctsAddSample"
   (Return _, _     ) -> error "impossible case in mctsAddSample"
   (choice :>>= m , Unvisited) -> do
@@ -270,18 +287,17 @@ mctsAddSample opts@MCTSOpts {..} (Opt o) eval t = case (view o, t) of
     case chosen of
       DiscreteChosen ix c -> do
         let nextStep = Opt (m c)
-        (_, cs, sampled, objs) <- mctsAddSample opts nextStep eval Unvisited
-        return (initDiscreteSubtree (Opt o) objs, DiscreteCrumb ix : cs, sampled, objs)
+        (cs, sampled) <- mctsAddSample opts nextStep Unvisited
+        return (DiscreteCrumb ix : cs, sampled)
   (choice :>>= m, b@DiscreteBranch {..}) -> do
     chosen <- choose opts b choice
     -- TODO: standardize naming of intermediate vars. Some are newX, others x'
     case chosen of
-      dc@(DiscreteChosen ix c) -> do
+      DiscreteChosen ix c -> do
         let nextStep = Opt (m c)
         let subtree  = IM.findWithDefault Unvisited ix expandedChoices
-        (newSubtree, cs, sampled, objs) <- mctsAddSample opts nextStep eval subtree
-        let b' = insertSubResult opts (newSubtree, dc, objs) mempty
-        return (b', DiscreteCrumb ix : cs,  sampled, objs)
+        (cs, sampled) <- mctsAddSample opts nextStep subtree
+        return (DiscreteCrumb ix : cs,  sampled)
 
 -- TODO: this isn't quite right. Nested MCTS records the globally best sequence
 -- and always plays the move from that sequence, even if it wasn't found in the

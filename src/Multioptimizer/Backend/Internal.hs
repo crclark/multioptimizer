@@ -3,21 +3,22 @@
 module Multioptimizer.Backend.Internal where
 
 import Control.Monad.Trans.Maybe (MaybeT)
-import Data.Random (RVarT)
+import Data.Random (RVar)
 import qualified Data.Vector.Unboxed as U
 
 import Multioptimizer.Internal
 
--- TODO: RVarT IO newtype
+-- TODO: MaybeT RVar newtype
 
 data Backend a where
   Backend :: Monoid m =>
           (Opt a
-           -> (a -> IO (U.Vector Double))
            -> m
            -- ^ Search state
-           -> MaybeT (RVarT IO) (m, [Breadcrumb], a, U.Vector Double))
+           -> MaybeT RVar ([Breadcrumb], a))
           -- ^ Sampler
+          -> ([Breadcrumb] -> U.Vector Double -> m -> m)
+          -- ^ Update state based on search result
           -> Backend a
 
 

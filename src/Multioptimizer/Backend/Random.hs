@@ -14,7 +14,6 @@ import Multioptimizer.Internal
 import Data.Functor.Identity (Identity)
 import Control.Monad
 import Control.Monad.Trans.Class (lift)
-import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Maybe (MaybeT, runMaybeT)
 import Control.Monad.Operational (ProgramViewT(Return,(:>>=)), view)
 import Data.Random (sampleState, RVarT, uniformT)
@@ -45,7 +44,8 @@ runOpt (Opt o) = case view o of
       return (DiscreteCrumb ix : cs, x)
 
 randomSearch :: Backend a
-randomSearch = Backend $ \o f () -> do
-  (cs, s) <- runOpt o
-  objs <- liftIO $ f s
-  return ((), cs, s, objs)
+randomSearch = Backend sampler updater
+  where sampler = \o () -> do
+          (cs, s) <- runOpt o
+          return (cs, s)
+        updater _ _ _ = ()
