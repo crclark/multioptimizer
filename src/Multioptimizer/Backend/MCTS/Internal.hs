@@ -4,13 +4,12 @@
 
 module Multioptimizer.Backend.MCTS.Internal where
 
-import Control.Error (hoistMaybe)
+import Control.Error (fromMaybe, hoistMaybe)
 import Control.Monad
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Operational (ProgramViewT(Return,(:>>=)), view)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Maybe (MaybeT, runMaybeT)
-import Data.Foldable (minimumBy)
 import Data.Function (on)
 import Data.IORef (newIORef)
 import Data.Ord (comparing)
@@ -23,7 +22,7 @@ import Data.Random.Source.IO ()
 import Data.Random.Source.PureMT (newPureMT, pureMT)
 import Data.Traversable (forM)
 import Data.Word (Word64)
-import Safe.Foldable (maximumByMay)
+import Safe.Foldable (maximumByMay, minimumByMay)
 import Multioptimizer.Backend.Internal (Backend(..))
 import Multioptimizer.Backend.Random (runOpt)
 import Multioptimizer.Util.Pareto
@@ -75,7 +74,12 @@ insertSubResult MCTSOpts {..}
     , numVisits = numVisits + 1
     , expandedChoices = IM.insert discreteChosenIndex subtree expandedChoices
     }
-insertSubResult _ _ (Leaf _) = error "impossible case in insertSubResult"
+insertSubResult _ _ (ReturnLeaf _) = error "impossible case in insertSubResult"
+insertSubResult _ (subtree, DiscreteChosen{..}, objs) Unvisited =
+  DiscreteBranch { _treeFrontier = insert ((), objs) mempty
+                 , numVisits = 1
+                 , expandedChoices = IM.singleton discreteChosenIndex subtree
+                 }
 
 -- | Represents the current state of the Monte Carlo search tree.
 -- Branches represent choices that have been expanded. Leaves are unexpanded
@@ -89,7 +93,8 @@ data Tree = DiscreteBranch {
   expandedChoices :: IM.IntMap Tree
   -- ^ branches to choices that have already been expanded
 }
- | Leaf {numVisits :: Word}
+ | ReturnLeaf {numVisits :: Word}
+ | Unvisited
   deriving Show
 
 -- TODO: many impossible cases come from merging trees of different shapes,
@@ -99,20 +104,22 @@ data Tree = DiscreteBranch {
 instance Semigroup Tree where
   (DiscreteBranch tf1 n1 ec1) <> (DiscreteBranch tf2 n2 ec2) =
     DiscreteBranch (tf1 <> tf2) (n1 + n2) (IM.unionWith (<>) ec1 ec2)
-  (Leaf n1) <> (Leaf n2) =
-    Leaf (n1 + n2)
-  (Leaf n1) <> (DiscreteBranch tf2 n2 ec2) =
+  (ReturnLeaf n1) <> (ReturnLeaf n2) =
+    ReturnLeaf (n1 + n2)
+  (ReturnLeaf n1) <> (DiscreteBranch tf2 n2 ec2) =
     DiscreteBranch tf2 (n1 + n2) ec2
-  (DiscreteBranch tf1 n1 ec1) <> (Leaf n2) =
+  (DiscreteBranch tf1 n1 ec1) <> (ReturnLeaf n2) =
     DiscreteBranch tf1 (n1 + n2) ec1
+  Unvisited <> t = t
+  t <> Unvisited = t
 
 instance Monoid Tree where
-  mempty = Leaf 0
+  mempty = Unvisited
   mappend = (<>)
 
 treeFrontier :: Tree -> Frontier ()
-treeFrontier (Leaf _) = mempty
-treeFrontier t        = _treeFrontier t
+treeFrontier DiscreteBranch{..} = _treeFrontier
+treeFrontier _ = mempty
 
 -- TODO: this uct is slightly wrong as-is. The problem is that it's supposed to
 -- be using the *average* reward of a given choice, but we're using the
@@ -148,7 +155,7 @@ uct
   -> Word
     -- ^ index of best child
 uct n c_p numVisits hyperVols maxIndex = fromIntegral
-  $ minimumBy (comparing f) ([0 .. maxIndex] :: [Word])
+  $ fromMaybe 0 $ minimumByMay (comparing f) ([0 .. maxIndex] :: [Word])
  where
   f :: Word -> Maybe Double
   f ix = case IM.lookup (fromIntegral ix) scaledHyperVols of
@@ -173,13 +180,9 @@ choose
   -> OptInstr intermed
   -> MaybeT (RVarT IO) (Chosen intermed)
 choose MCTSOpts {..} t@DiscreteBranch{} (UniformChoice xs) =
-  case (IM.size (expandedChoices t), V.length xs) of
-    (_, 0) -> mzero
-    (0, l) -> do
-      discreteChosenIndex <- fromIntegral <$> lift (uniformT 0 (l - 1))
-      let chosenChoice = xs V.! discreteChosenIndex
-      return DiscreteChosen {..}
-    (_, l) -> do
+  case V.length xs of
+    0 -> mzero
+    l -> do
       let refpoint =
             foldr1 (U.zipWith min)
               $ map snd
@@ -189,7 +192,7 @@ choose MCTSOpts {..} t@DiscreteBranch{} (UniformChoice xs) =
             IM.map (hypervolume refpoint . treeFrontier) (expandedChoices t)
       let numChildVisits ix = case IM.lookup ix (expandedChoices t) of
             Nothing       -> 0.0
-            Just (Leaf n) -> fromIntegral n
+            Just (ReturnLeaf n) -> fromIntegral n
             Just b        -> fromIntegral $ numVisits b
       let discreteChosenIndex = fromIntegral $ uct (numVisits t)
                                                    explorationFactor
@@ -198,7 +201,11 @@ choose MCTSOpts {..} t@DiscreteBranch{} (UniformChoice xs) =
                                                    (fromIntegral $ l - 1)
       let chosenChoice = xs V.! discreteChosenIndex
       return DiscreteChosen {..}
-choose _ (Leaf _) _ = error "impossible case in choose"
+choose MCTSOpts{..} Unvisited (UniformChoice xs) = do
+  discreteChosenIndex <- fromIntegral <$> lift (uniformT 0 (V.length xs - 1))
+  let chosenChoice = xs V.! discreteChosenIndex
+  return DiscreteChosen {..}
+choose _ (ReturnLeaf _) _ = error "impossible case in choose"
 
 defaultStrategy :: Opt a -> MaybeT (RVarT IO) a
 defaultStrategy = runOpt
@@ -210,7 +217,7 @@ initTree = const mempty
 -- | Initialize a new subtree from a single random rollout.
 initDiscreteSubtree :: Opt a -> U.Vector Double -> Tree
 initDiscreteSubtree (Opt o) objs = case view o of
-  (Return _) -> Leaf 1
+  (Return _) -> ReturnLeaf 1
   _          -> DiscreteBranch
     { _treeFrontier   = insert ((), objs) mempty
     , numVisits       = 1
@@ -242,11 +249,15 @@ mctsAddSample
   -> Tree
   -> MaybeT (RVarT IO) (Tree, a, U.Vector Double)
 mctsAddSample opts@MCTSOpts {..} (Opt o) eval t = case (view o, t) of
-  (Return x, Leaf _) -> do
+  (Return x, ReturnLeaf _) -> do
     objs <- liftIO $ eval x
-    return (Leaf 1, x, objs)
+    return (ReturnLeaf 1, x, objs)
+  (Return x, Unvisited) -> do
+    objs <- liftIO $ eval x
+    return (ReturnLeaf 1, x, objs)
+  (_, ReturnLeaf _) -> error "impossible ReturnLeaf case in mctsAddSample"
   (Return _, _     ) -> error "impossible case in mctsAddSample"
-  (_       , Leaf _) -> do
+  (_       , Unvisited) -> do
     sampled <- defaultStrategy (Opt o)
     objs    <- liftIO $ eval sampled
     return (initDiscreteSubtree (Opt o) objs, sampled, objs)
@@ -256,9 +267,9 @@ mctsAddSample opts@MCTSOpts {..} (Opt o) eval t = case (view o, t) of
     case chosen of
       dc@(DiscreteChosen ix c) -> do
         let nextStep = Opt (m c)
-        let subtree  = IM.findWithDefault (Leaf 0) ix expandedChoices
+        let subtree  = IM.findWithDefault Unvisited ix expandedChoices
         (newSubtree, sampled, objs) <- mctsAddSample opts nextStep eval subtree
-        let b' = insertSubResult opts (newSubtree, dc, objs) $ initDiscreteSubtree (Opt o) objs
+        let b' = insertSubResult opts (newSubtree, dc, objs) mempty
         return (b', sampled, objs)
 
 -- TODO: this isn't quite right. Nested MCTS records the globally best sequence
