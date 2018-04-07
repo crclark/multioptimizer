@@ -95,6 +95,11 @@ n5s n = do
   xs <- n5s (n - 1)
   return (x : xs)
 
+-- TODO: flickers. Can we improve the algorithm so that it is guaranteed to
+-- find the optimum in this amount of time?
+-- For example, perhaps we could add a @deterministic@ flag to MCTSOpts that
+-- would try to avoid taking the same path twice. We'd need to decorate the tree
+-- with a bool telling us whether a subtree has been completely expanded.
 maximizeSum :: TestTree
 maximizeSum = testCase "mcts maximizes sum of list" $ do
   result <- run defaultOptions { maxSolutions = 1, timeLimitMillis = 3000 }
