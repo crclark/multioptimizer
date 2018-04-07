@@ -16,7 +16,7 @@ data Backend a where
            -> (a -> IO (U.Vector Double))
            -> m
            -- ^ Search state
-           -> MaybeT (RVarT IO) (m, a, U.Vector Double))
+           -> MaybeT (RVarT IO) (m, [Breadcrumb], a, U.Vector Double))
           -- ^ Sampler
           -> Backend a
 

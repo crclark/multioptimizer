@@ -119,7 +119,7 @@ runSearch Options{..} o objFunction (Backend sample) = do
     forever $ ignoreUserErrors $ flip (runRVarTWith liftIO) randSource $ do
       t <- liftIO $ readTVarIO sharedState
       res <- runMaybeT $ sample o objFunction t
-      forM_ res $ \tuple@(t', _, objs) ->
+      forM_ res $ \tuple@(t',_, _, objs) ->
         objs `seq` t' `seq` liftIO $ atomically $ writeTBQueue queue tuple
 
   logIfVerbose x = when verbose $ putStrLn x
@@ -149,7 +149,7 @@ runSearch Options{..} o objFunction (Backend sample) = do
       then do
         liftIO $ forM_ workers cancel
         rest <- liftIO $ atomically $ flushTBQueue queue
-        let resultFront = foldl' (\f (_,x,objs) ->
+        let resultFront = foldl' (\f (_,_,x,objs) ->
                                   insertSized (x,objs) maxSolutions f)
                                  frontier
                                  rest
@@ -158,7 +158,7 @@ runSearch Options{..} o objFunction (Backend sample) = do
       else do
         res <- liftIO $ atomically $ tryReadTBQueue queue
         case res of
-          Just (t,x,objs) -> do
+          Just (t,_,x,objs) -> do
             let frontier' = insertSized (x,objs) maxSolutions frontier
             liftIO $ logHyperVolume frontier'
             liftIO $ atomically $ modifyTVar' sharedState (<> t)

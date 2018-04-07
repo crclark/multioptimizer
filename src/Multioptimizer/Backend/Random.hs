@@ -29,22 +29,23 @@ sample
   :: Opt a
   -> Word64
           -- ^ Random seed
-  -> Maybe a
+  -> Maybe ([Breadcrumb], a)
 sample a seed =
   let randAction = runMaybeT $ runOpt @Identity a
   in  fst $ sampleState randAction (pureMT seed)
 
-runOpt :: Monad m => Opt a -> MaybeT (RVarT m) a
+runOpt :: Monad m => Opt a -> MaybeT (RVarT m) ([Breadcrumb], a)
 runOpt (Opt o) = case view o of
-  Return x                  -> return x
+  Return x                  -> return ([ReturnCrumb], x)
   (UniformChoice xs :>>= m) -> if V.null xs
     then mzero
     else do
       ix <- lift $ Data.Random.uniformT 0 (V.length xs - 1)
-      runOpt $ Opt $ m $ xs V.! ix
+      (cs, x) <- runOpt $ Opt $ m $ xs V.! ix
+      return (DiscreteCrumb ix : cs, x)
 
 randomSearch :: Backend a
 randomSearch = Backend $ \o f () -> do
-  s <- runOpt o
+  (cs, s) <- runOpt o
   objs <- liftIO $ f s
-  return ((), s, objs)
+  return ((), cs, s, objs)

@@ -207,7 +207,7 @@ choose MCTSOpts{..} Unvisited (UniformChoice xs) = do
   return DiscreteChosen {..}
 choose _ (ReturnLeaf _) _ = error "impossible case in choose"
 
-defaultStrategy :: Opt a -> MaybeT (RVarT IO) a
+defaultStrategy :: Opt a -> MaybeT (RVarT IO) ([Breadcrumb], a)
 defaultStrategy = runOpt
 
 -- | Initialize an empty tree for a new problem.
@@ -233,9 +233,17 @@ initDiscreteSubtree (Opt o) objs = case view o of
 -- If we did add the entire random simulation to the tree, the current
 -- Tree representation would make it appear that we had entered "choice mode"
 -- all the way down to the return statement along that path through the tree,
--- which isn't actually true. The problem is that the Leaf constructor currently
--- has two meanings: 1. corresponding to a return statement and 2. corresponding
--- to the switchover to the default strategy.
+-- which isn't actually true. I believe that the best way to fix this is to add
+-- a default strategy/random rollout constructor to the tree that just stores
+-- the path taken by each rollout that passed through the given node. When the
+-- node gets expanded, each of those paths would get promoted into an expanded
+-- choice with the random rollout constructor themselves. The random rollout
+-- constructor would also contain a front, so it would have a hypervolume, so
+-- the search is biased at that point towards better-performing choices. But
+-- make it optional. Might be too biased and perform worse. But do we want to
+-- use space proportional to the number of instructions * the branching factor?
+-- Best would be to make it optional, but is that possible without making things
+-- really ugly? Worried about strict binds for intermediate lists.
 
 -- | one iteration of MCTS for a given tree. Adds one sample.
 -- Returns the subtree corresponding to the choices taken to construct the new
@@ -247,20 +255,23 @@ mctsAddSample
   -> Opt a
   -> (a -> IO (U.Vector Double))
   -> Tree
-  -> MaybeT (RVarT IO) (Tree, a, U.Vector Double)
+  -> MaybeT (RVarT IO) (Tree, [Breadcrumb], a, U.Vector Double)
 mctsAddSample opts@MCTSOpts {..} (Opt o) eval t = case (view o, t) of
-  (Return x, ReturnLeaf _) -> do
+  (Return x, ReturnLeaf i) -> do
     objs <- liftIO $ eval x
-    return (ReturnLeaf 1, x, objs)
+    return (ReturnLeaf (i+1), [ReturnCrumb], x, objs)
   (Return x, Unvisited) -> do
     objs <- liftIO $ eval x
-    return (ReturnLeaf 1, x, objs)
+    return (ReturnLeaf 1, [ReturnCrumb], x, objs)
   (_, ReturnLeaf _) -> error "impossible ReturnLeaf case in mctsAddSample"
   (Return _, _     ) -> error "impossible case in mctsAddSample"
-  (_       , Unvisited) -> do
-    sampled <- defaultStrategy (Opt o)
-    objs    <- liftIO $ eval sampled
-    return (initDiscreteSubtree (Opt o) objs, sampled, objs)
+  (choice :>>= m , Unvisited) -> do
+    chosen <- choose opts Unvisited choice
+    case chosen of
+      DiscreteChosen ix c -> do
+        let nextStep = Opt (m c)
+        (_, cs, sampled, objs) <- mctsAddSample opts nextStep eval Unvisited
+        return (initDiscreteSubtree (Opt o) objs, DiscreteCrumb ix : cs, sampled, objs)
   (choice :>>= m, b@DiscreteBranch {..}) -> do
     chosen <- choose opts b choice
     -- TODO: standardize naming of intermediate vars. Some are newX, others x'
@@ -268,9 +279,9 @@ mctsAddSample opts@MCTSOpts {..} (Opt o) eval t = case (view o, t) of
       dc@(DiscreteChosen ix c) -> do
         let nextStep = Opt (m c)
         let subtree  = IM.findWithDefault Unvisited ix expandedChoices
-        (newSubtree, sampled, objs) <- mctsAddSample opts nextStep eval subtree
+        (newSubtree, cs, sampled, objs) <- mctsAddSample opts nextStep eval subtree
         let b' = insertSubResult opts (newSubtree, dc, objs) mempty
-        return (b', sampled, objs)
+        return (b', DiscreteCrumb ix : cs,  sampled, objs)
 
 -- TODO: this isn't quite right. Nested MCTS records the globally best sequence
 -- and always plays the move from that sequence, even if it wasn't found in the
@@ -289,7 +300,7 @@ nested (Opt o) eval l = case (view o, l) of
   (Return x               , _) -> (x,) <$> liftIO (eval x)
   (UniformChoice xs :>>= m, 1) -> do
     let subtrees = V.map (Opt . m) xs
-    sampled <- mapM runOpt subtrees
+    sampled <- mapM (fmap snd . runOpt) subtrees
     sampledWObjs <- mapM (\x -> (x,) <$> liftIO (eval x)) sampled
     hoistMaybe $ maximumByMay (domOrdering `on` snd) sampledWObjs
   (UniformChoice xs :>>= m, i) -> do

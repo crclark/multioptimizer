@@ -5,3 +5,4 @@ multioptimizer.cabal
 *.prof
 dist/
 dist-newstyle/
+*.log

@@ -22,11 +22,19 @@ import Data.Vector (Vector)
 -- choose to do something sophisticated with it, or translate it into a bisect
 -- operation then.
 
+-- | A single instruction in the search DSL.
 data OptInstr a where
   UniformChoice :: Vector a -> OptInstr a
-  --Maximize :: Double -> OptInstr ()
+  -- ^ Choose an element of a finite collection with equal probability.
 
 deriving instance Show a => Show (OptInstr a)
+
+-- | Represents the information necessary to recreate the choice made for each
+-- instruction.
+data Breadcrumb =
+  DiscreteCrumb Int
+  | ReturnCrumb
+  deriving (Show, Eq, Ord)
 
 newtype Opt a = Opt {getProgram :: Program OptInstr a}
 
