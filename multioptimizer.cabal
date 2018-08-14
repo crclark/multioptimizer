@@ -1,0 +1,161 @@
+-- This file has been generated from package.yaml by hpack version 0.20.0.
+--
+-- see: https://github.com/sol/hpack
+--
+-- hash: 9cb78199b052fa0af71356fe0541b6188f423ac9d9b5ad02bbd88477021e1164
+
+name:           multioptimizer
+version:        0.1.0.0
+description:    Please see the README on Github at <https://github.com/githubuser/multioptimizer#readme>
+homepage:       https://github.com/githubuser/multioptimizer#readme
+bug-reports:    https://github.com/githubuser/multioptimizer/issues
+author:         Author name here
+maintainer:     example@example.com
+copyright:      2018 Author name here
+license:        BSD3
+license-file:   LICENSE
+build-type:     Simple
+cabal-version:  >= 1.10
+
+extra-source-files:
+    ChangeLog.md
+    README.md
+
+source-repository head
+  type: git
+  location: https://github.com/githubuser/multioptimizer
+
+library
+  hs-source-dirs:
+      src
+  ghc-options: -Wall -Werror -O2
+  build-depends:
+      async >=2.0.0.0
+    , base >=4.7 && <5
+    , clock >=0.7.0
+    , containers >=0.5.10.0
+    , errors >2.2.2
+    , exceptions >0.8.0
+    , list-t >=1.0.0.0
+    , mtl >=2.2.0
+    , operational >=0.2.3.5
+    , random-fu >=0.2.7.0
+    , random-source >=0.3.0.6
+    , safe >=0.3.15
+    , stm >=2.4.0.0
+    , transformers >=0.5.2.0
+    , vector ==0.12.0.1
+    , vector-algorithms ==0.7.0.1
+  exposed-modules:
+      Multioptimizer
+      Multioptimizer.Backend
+      Multioptimizer.Backend.Exhaustive
+      Multioptimizer.Backend.Internal
+      Multioptimizer.Backend.MCTS
+      Multioptimizer.Backend.MCTS.Internal
+      Multioptimizer.Backend.Random
+      Multioptimizer.Executor.Local
+      Multioptimizer.Internal
+      Multioptimizer.Util.Operational
+      Multioptimizer.Util.Pareto
+      Multioptimizer.Util.Pareto.Internal
+  other-modules:
+      Paths_multioptimizer
+  default-language: Haskell2010
+
+executable example-keras
+  main-is: Main.hs
+  hs-source-dirs:
+      examples/keras
+  ghc-options: -threaded -rtsopts -with-rtsopts=-N -Wall -O2
+  build-depends:
+      aeson
+    , aeson-casing
+    , async
+    , base >=4.7 && <5
+    , bytestring
+    , clock
+    , containers
+    , directory
+    , errors
+    , exceptions
+    , list-t
+    , mtl
+    , multioptimizer
+    , operational
+    , optparse-generic
+    , pretty-simple
+    , process
+    , random-fu
+    , random-source
+    , safe
+    , scientific
+    , stm
+    , text
+    , transformers
+    , unordered-containers
+    , vector
+    , vector-algorithms
+  other-modules:
+      Paths_multioptimizer
+  default-language: Haskell2010
+
+executable example-tsp
+  main-is: Main.hs
+  hs-source-dirs:
+      examples/tsp
+  ghc-options: -threaded -rtsopts -with-rtsopts=-N -Wall -O2
+  build-depends:
+      async
+    , base >=4.7 && <5
+    , clock
+    , containers
+    , errors
+    , exceptions
+    , list-t
+    , mtl
+    , multioptimizer
+    , operational
+    , random-fu
+    , random-source
+    , safe
+    , stm
+    , transformers
+    , vector
+    , vector-algorithms
+  other-modules:
+      Paths_multioptimizer
+  default-language: Haskell2010
+
+test-suite multioptimizer-test
+  type: exitcode-stdio-1.0
+  main-is: Spec.hs
+  hs-source-dirs:
+      test
+  ghc-options: -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      async
+    , base >=4.7 && <5
+    , clock
+    , containers
+    , errors
+    , exceptions
+    , list-t
+    , mtl
+    , multioptimizer
+    , operational
+    , pretty-simple
+    , random-fu
+    , random-source
+    , safe
+    , stm
+    , tasty
+    , tasty-hunit
+    , transformers
+    , vector
+    , vector-algorithms
+  other-modules:
+      Spec.Multioptimizer.Backend.MCTS
+      Spec.Multioptimizer.Util.Pareto.Internal
+      Paths_multioptimizer
+  default-language: Haskell2010
