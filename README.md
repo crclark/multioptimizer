@@ -1,5 +1,6 @@
 # multioptimizer
 
+Multiobjective search over arbitrary data structures, with a monadic interface and multiple search strategies including Monte Carlo Tree Search.
 
 
 
