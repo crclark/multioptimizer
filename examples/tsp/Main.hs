@@ -50,10 +50,17 @@ dist (x1, y1) (x2, y2) = sqrt $ (x1 - x2)**2 + (y1 - y2)**2
 totalDist :: [(Double, Double)] -> Double
 totalDist [] = 0.0
 totalDist [_] = 0.0
-totalDist (p1:p2:xs) = dist p1 p2 + totalDist xs
+totalDist (p1:p2:xs) = dist p1 p2 + totalDist (p2:xs)
 
 scoreTSP :: [(Double, Double)] -> IO (U.Vector Double)
 scoreTSP xs = return [negate (totalDist xs)]
+
+tspOpts :: Word -> Options
+tspOpts lim = defaultOptions
+  { timeLimitMillis = lim*1000
+  , randomSeed = Just 12
+  , verbose = True
+  , numThreads = 15}
 
 main :: IO ()
 main = do
@@ -64,7 +71,7 @@ main = do
       let lim = read (head args)
       coords <- loadTSP (args !! 1)
       let tspOpt = evalStateT tsp (fromList coords)
-      result <- runSearch defaultOptions{timeLimitMillis = lim*1000, randomSeed = Just 12}
+      result <- runSearch (tspOpts lim)
                           tspOpt
                           scoreTSP
                           (mcts defaultOpts)

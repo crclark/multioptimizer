@@ -343,8 +343,8 @@ testNetwork = Model {
 
 evalModel :: Model -> IO (U.Vector Double)
 evalModel m = bracket_ writeModel delModel $ do
-  let args = ["python", "examples/keras/run_mnist.py", "temp.json"]
-  t@(exitCode, stdout, stderr) <- readProcessWithExitCode "optirun" args ""
+  let args = ["examples/keras/run_mnist.py", "temp.json"]
+  t@(exitCode, stdout, stderr) <- readProcessWithExitCode "python3" args ""
   if exitCode /= ExitSuccess
     -- TODO: proper error handling
     then do pPrint m
