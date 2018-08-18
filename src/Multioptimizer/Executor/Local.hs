@@ -6,28 +6,28 @@
 
 module Multioptimizer.Executor.Local where
 
-import Control.Concurrent.Async (async, cancel)
-import Control.Concurrent.STM (atomically, newTVarIO, newTBQueueIO, readTVarIO,
-                               modifyTVar', writeTBQueue, tryReadTBQueue,
-                               flushTBQueue)
-import Control.Exception (catches, Handler(..), ErrorCall)
-import Control.Monad (forever, replicateM, forM_, when)
+import qualified Control.Concurrent.MSemN2 as Sem
+import Control.Concurrent.STM (atomically, newTVarIO, readTVarIO, readTVar,
+                               modifyTVar', TVar, writeTVar,
+                               swapTVar, retry)
+import Control.Exception (bracket_)
+import Control.Monad (forM_, when, unless, void)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Maybe (runMaybeT)
-import Data.Foldable (foldl')
 import Data.IORef (newIORef)
 import qualified Data.Vector.Unboxed as U
 import Data.Random (runRVarTWith)
 import Data.Random.Lift (lift)
 import Data.Random.Source.IO ()
 import Data.Random.Source.PureMT (newPureMT, pureMT)
+import Data.Set (Set)
+import qualified Data.Set as Set
 import Data.Word (Word64)
+import GHC.Conc (registerDelay, ThreadId, forkIO, myThreadId, killThread)
 import Multioptimizer.Backend.Internal (Backend(..))
 import Multioptimizer.Util.Pareto
 import Multioptimizer.Internal
-import System.Clock (getTime, Clock(Monotonic), toNanoSecs)
-import System.IO (hPutStrLn, stderr, hSetBuffering, stdout, BufferMode(..))
-import System.IO.Error (IOError)
+import System.IO (hSetBuffering, stdout, BufferMode(..))
 
 -- | Specifies whether the objectives in an objectives vector should be
 -- maximized or minimized. Currently, only maximization problems are supported.
@@ -75,92 +75,108 @@ data SearchResult a = SearchResult {
 
 defaultOptions :: Options
 defaultOptions = Options
-  { objectiveType = Maximize
-  , timeLimitMillis   = 1000
-  , maxIters          = Nothing
-  , maxSolutions      = 100
-  , randomSeed        = Nothing
-  , numThreads        = 1
-  , verbose           = True
-  , objBound       = Nothing
+  { objectiveType   = Maximize
+  , timeLimitMillis = 1000
+  , maxIters        = Nothing
+  , maxSolutions    = 100
+  , randomSeed      = Nothing
+  , numThreads      = 1
+  , verbose         = True
+  , objBound        = Nothing
   }
 
-runSearch :: Options
-          -> Opt a
-          -> (a -> IO (U.Vector Double))
-          -> Backend a
-          -> IO (SearchResult a)
-runSearch Options{..} o objFunction (Backend sample update) = do
+logHyperVolume :: Options -> Frontier a -> IO ()
+logHyperVolume Options {..} front = mapM_ (logIfVerbose . show)
+  $ fmap (flip hypervolume front) objBound
+  where logIfVerbose x = when verbose $ putStrLn x
+
+registerThreadId :: TVar (Set ThreadId) -> IO ()
+registerThreadId s = do
+  tid <- myThreadId
+  atomically $ modifyTVar' s (Set.insert tid)
+
+unregisterThreadId :: TVar (Set ThreadId) -> IO ()
+unregisterThreadId s = do
+  tid <- myThreadId
+  atomically $ modifyTVar' s (Set.delete tid)
+
+runSearch
+  :: Options
+  -> Opt a
+  -> (a -> IO (U.Vector Double))
+  -> Backend a
+  -> IO (SearchResult a)
+runSearch opts@Options {..} o objFunction (Backend sample update) = do
   hSetBuffering stdout LineBuffering
-  startTime  <- liftIO currMillis
   randSource <- case randomSeed of
     Nothing -> do
       mt <- liftIO newPureMT
       liftIO (newIORef mt)
     Just s -> liftIO $ newIORef $ pureMT s
-  sharedState <- newTVarIO mempty
-  queue <- newTBQueueIO (fromIntegral $ 10*numThreads)
-  workers <- replicateM (fromIntegral numThreads)
-                        (async (worker sharedState queue randSource))
-  consumer workers sharedState queue mempty startTime 0
-
+  -- searchState is a tuple of frontier and search state
+  searchState     <- newTVarIO (mempty, mempty)
+  -- tracks how many iterations have been done so far
+  itersDone       <- newTVarIO 0
+  -- our time limit signal
+  done            <- registerDelay (fromIntegral timeLimitMillis * 1000)
+  -- set of currently active worker thread ids
+  workerThreadIds <- newTVarIO mempty
+  -- limits number of simultaneous workers
+  workerSem       <- Sem.new numThreads
+  void $ forkIO $ spawnLoop workerThreadIds
+                            searchState
+                            itersDone
+                            done
+                            randSource
+                            workerSem
+  resultWaiter done searchState itersDone workerThreadIds
  where
+  spawnLoop workerThreadIds searchState itersDone done randSource workerSem =
+    do
+      alreadyDone <- readTVarIO done
+      unless alreadyDone $ do
+        Sem.wait   workerSem 1
+        Sem.signal workerSem 1
+        void $ forkIO $ worker workerThreadIds
+                               searchState
+                               itersDone
+                               done
+                               randSource
+                               workerSem
+        spawnLoop workerThreadIds
+                  searchState
+                  itersDone
+                  done
+                  randSource
+                  workerSem
 
-  stopCondition :: Bool -> Maybe Bool -> Bool
-  stopCondition True _ = True
-  stopCondition _ (Just True) = True
-  stopCondition _ _ = False
+  worker workerThreadIds searchState itersDone done randSource workerSem =
+    bracket_ (registerThreadId workerThreadIds)
+             (unregisterThreadId workerThreadIds)
+      $ Sem.with workerSem             1
+      $ flip     (runRVarTWith liftIO) randSource
+      $ do
+          (_, t) <- liftIO $ readTVarIO searchState
+          res    <- lift $ runMaybeT $ sample o t
+          forM_ res $ \(cs, x) -> do
+            objs     <- liftIO $ objFunction x
+            frontier <- liftIO $ atomically $ do
+              (frontier, state) <- readTVar searchState
+              let frontier' = insertSized (x, objs) maxSolutions frontier
+              swapTVar    searchState (frontier', update cs objs state)
+              modifyTVar' itersDone   (+ 1)
+              numDone <- readTVar itersDone
+              when (Just True == fmap (== numDone) maxIters)
+                   (writeTVar done True)
+              return frontier'
+            -- TODO: these logs could be printed somewhat out of order.
+            liftIO $ logHyperVolume opts frontier
 
-  currMillis = (`div` 1000000) . toNanoSecs <$> getTime Monotonic
-
-  worker sharedState queue randSource =
-    forever $ ignoreUserErrors $ flip (runRVarTWith liftIO) randSource $ do
-      t <- liftIO $ readTVarIO sharedState
-      res <- lift $ runMaybeT $ sample o t
-      forM_ res $ \(cs, x) -> do
-        objs <- liftIO $ objFunction x
-        objs `seq` liftIO $ atomically $ writeTBQueue queue (cs,x,objs)
-
-  logIfVerbose x = when verbose $ putStrLn x
-
-  ignoreUserErrors :: IO () -> IO ()
-  ignoreUserErrors =
-    flip catches
-         [ Handler (\(e :: IOError) ->
-                     hPutStrLn stderr $ "Ignored an IOError: " ++ show e),
-           Handler (\(e :: ErrorCall) ->
-                     hPutStrLn stderr $ "Ignored a call to `error`: " ++ show e)]
-
-  logHyperVolume :: Frontier a
-                 -> IO ()
-  logHyperVolume front =
-    mapM_ (logIfVerbose . show) $ fmap (flip hypervolume front) objBound
-
-  -- TODO: at first a producer/consumer made sense, but now it seems like
-  -- overkill -- the producers could atomically swap all their results directly
-  -- into the shared state. Leaving this as producer/consumer for now just in
-  -- case it becomes necessary for some unforeseen reason. If not, remove.
-  consumer workers sharedState queue frontier startTime !iters = do
-    currTime <- currMillis
-    let outOfTime  = currTime - startTime > fromIntegral timeLimitMillis
-    let outOfIters = (== iters) <$> maxIters
-    if stopCondition outOfTime outOfIters
-      then do
-        forM_ workers cancel
-        rest <- atomically $ flushTBQueue queue
-        let resultFront = foldl' (\f (_, x, objs) ->
-                                  insertSized (x,objs) maxSolutions f)
-                                 frontier
-                                 rest
-        let resultTotalIters = iters + (fromIntegral $ length rest)
-        return SearchResult{..}
-      else do
-        res <- atomically $ tryReadTBQueue queue
-        case res of
-          Just (cs,x,objs) -> do
-            let frontier' = insertSized (x,objs) maxSolutions frontier
-            logHyperVolume frontier'
-            atomically $ modifyTVar' sharedState (update cs objs)
-            consumer workers sharedState queue frontier' startTime (iters + 1)
-          Nothing ->
-            consumer workers sharedState queue frontier startTime iters
+  resultWaiter done searchState itersDone workerThreadIds = do
+    (frontier, _) <- atomically $ do
+      isDone <- readTVar done
+      if isDone then readTVar searchState else retry
+    numDone <- readTVarIO itersDone
+    tids    <- readTVarIO workerThreadIds
+    forM_ (Set.toList tids) killThread
+    return $ SearchResult frontier numDone
