@@ -56,7 +56,6 @@ library
       Multioptimizer.Backend.Random
       Multioptimizer.Executor.Local
       Multioptimizer.Internal
-      Multioptimizer.Util.Operational
       Multioptimizer.Util.Pareto
       Multioptimizer.Util.Pareto.Internal
   other-modules:
